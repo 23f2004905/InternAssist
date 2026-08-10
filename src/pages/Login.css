@@ -1,0 +1,184 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(184, 134, 59, 0.08), transparent 40%),
+    var(--bg);
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 36px 32px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.login-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: #fff;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.login-title {
+  font-size: 22px;
+}
+
+.login-subtitle {
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-form label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 10px;
+}
+
+.login-form input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.login-form input:focus-visible {
+  border-color: var(--accent);
+}
+
+.field-note {
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-style: italic;
+  margin-top: 4px;
+}
+
+.login-error {
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  margin-top: 10px;
+}
+
+.login-submit {
+  margin-top: 18px;
+  width: 100%;
+  padding: 11px;
+}
+
+.login-demo {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px dashed var(--border);
+}
+
+.login-demo-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  margin-bottom: 10px;
+}
+
+.login-demo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-demo-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  background: var(--surface-sunken);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--ink);
+  transition: border-color 0.15s ease;
+}
+
+.login-demo-chip:hover {
+  border-color: var(--accent);
+}
+
+.login-demo-role {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+
+.role-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.login-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.login-inline-link {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.login-inline-link:hover {
+  text-decoration: underline;
+}
+
+.login-footer-text {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.login-success {
+  font-size: 14px;
+  color: var(--success);
+  background: var(--success-soft);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+.role-student { background: var(--primary); }
+.role-faculty { background: var(--accent); }
+.role-admin { background: var(--success); }

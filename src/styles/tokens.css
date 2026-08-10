@@ -1,0 +1,126 @@
+/* ============================================
+   InternAssist — Design Tokens
+   Institutional academic look: navy + brass,
+   warm paper background, restrained accents.
+   ============================================ */
+
+:root {
+  /* Color */
+  --bg: #F6F5F1;
+  --surface: #FFFFFF;
+  --surface-sunken: #EFEDE6;
+  --ink: #1F2937;
+  --ink-soft: #5B6472;
+  --border: #E2E0D8;
+
+  --primary: #16324F;
+  --primary-light: #2C4A6E;
+  --primary-soft: #E9EEF3;
+
+  --accent: #B8863B;
+  --accent-soft: #F2E8D4;
+
+  --success: #2F6F4E;
+  --success-soft: #E6F0EA;
+  --danger: #9B3B3B;
+  --danger-soft: #F5E7E7;
+
+  /* Type */
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Layout */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --sidebar-width: 240px;
+  --shadow-card: 0 1px 2px rgba(22, 50, 79, 0.06), 0 1px 8px rgba(22, 50, 79, 0.04);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--primary);
+  margin: 0;
+}
+
+p { margin: 0; }
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+input, select, textarea {
+  font-family: var(--font-body);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #FFFFFF;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s ease;
+}
+.btn-primary:hover { background: var(--primary-light); }
+
+.btn-secondary {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.btn-secondary:hover { border-color: var(--primary); background: var(--primary-soft); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 3px 8px;
+  border-radius: 20px;
+}
+.badge-success { background: var(--success-soft); color: var(--success); }
+.badge-neutral { background: var(--surface-sunken); color: var(--ink-soft); }

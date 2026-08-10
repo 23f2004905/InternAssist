@@ -1,0 +1,438 @@
+/* =========================================
+   USERS PAGE
+   ========================================= */
+
+.users-page {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.users-main {
+  width: min(1180px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: 46px 0 70px;
+}
+
+
+/* =========================================
+   HEADER
+   ========================================= */
+
+.users-header {
+  margin-bottom: 28px;
+}
+
+.users-eyebrow {
+  color: var(--accent);
+
+  font-size: 10px;
+  font-weight: 700;
+
+  letter-spacing: 0.12em;
+
+  margin-bottom: 7px;
+}
+
+.users-header h1 {
+  color: var(--primary);
+
+  font-family: var(--font-body);
+
+  font-size: 30px;
+  font-weight: 700;
+
+  line-height: 1.2;
+}
+
+.users-subtitle {
+  color: var(--ink-soft);
+
+  font-size: 13px;
+
+  line-height: 1.6;
+
+  max-width: 700px;
+
+  margin-top: 7px;
+}
+
+
+/* =========================================
+   MESSAGES
+   ========================================= */
+
+.users-message {
+  padding: 11px 14px;
+
+  border-radius: 6px;
+
+  font-size: 11px;
+
+  margin-bottom: 18px;
+}
+
+.users-message.success {
+  background: var(--success-soft);
+
+  color: var(--success);
+
+  border: 1px solid #d7eadf;
+}
+
+.users-message.error {
+  background: #faf1ef;
+
+  color: #8a4d3d;
+
+  border: 1px solid #ead8d3;
+}
+
+
+/* =========================================
+   USERS SECTION
+   ========================================= */
+
+.users-section {
+  margin-top: 10px;
+}
+
+.users-section-header {
+  margin-bottom: 13px;
+}
+
+.users-section-header h2 {
+  color: var(--primary);
+
+  font-family: var(--font-body);
+
+  font-size: 17px;
+}
+
+.users-section-header p {
+  color: var(--ink-soft);
+
+  font-size: 10px;
+
+  margin-top: 3px;
+}
+
+
+/* =========================================
+   EMPTY STATE
+   ========================================= */
+
+.users-empty {
+  min-height: 250px;
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  flex-direction: column;
+
+  background: var(--surface);
+
+  border: 1px solid var(--border);
+
+  border-radius: 8px;
+
+  text-align: center;
+
+  padding: 30px;
+}
+
+.users-empty-icon {
+  width: 42px;
+  height: 42px;
+
+  display: flex;
+
+  align-items: center;
+  justify-content: center;
+
+  background: var(--primary-soft);
+
+  color: var(--primary);
+
+  border-radius: 7px;
+
+  font-size: 17px;
+
+  margin-bottom: 13px;
+}
+
+.users-empty h3 {
+  color: var(--primary);
+
+  font-family: var(--font-body);
+
+  font-size: 14px;
+}
+
+.users-empty p {
+  color: var(--ink-soft);
+
+  font-size: 10px;
+
+  margin-top: 4px;
+}
+
+
+/* =========================================
+   TABLE
+   ========================================= */
+
+.users-table-wrapper {
+  background: var(--surface);
+
+  border: 1px solid var(--border);
+
+  border-radius: 8px;
+
+  overflow-x: auto;
+}
+
+.users-table {
+  width: 100%;
+
+  border-collapse: collapse;
+
+  min-width: 850px;
+}
+
+.users-table th {
+  background: var(--surface-sunken);
+
+  color: var(--ink-soft);
+
+  font-family: var(--font-mono);
+
+  font-size: 8px;
+
+  font-weight: 600;
+
+  letter-spacing: 0.06em;
+
+  text-align: left;
+
+  padding: 12px 14px;
+
+  border-bottom: 1px solid var(--border);
+}
+
+.users-table td {
+  padding: 14px;
+
+  border-bottom: 1px solid var(--border);
+
+  color: var(--ink-soft);
+
+  font-size: 10px;
+
+  vertical-align: middle;
+}
+
+.users-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.users-table tbody tr:hover {
+  background: #fafbfd;
+}
+
+
+/* =========================================
+   USER NAME
+   ========================================= */
+
+.user-name-cell {
+  display: flex;
+
+  align-items: center;
+
+  gap: 10px;
+
+  min-width: 170px;
+}
+
+.user-avatar {
+  width: 34px;
+  height: 34px;
+
+  display: flex;
+
+  align-items: center;
+  justify-content: center;
+
+  flex-shrink: 0;
+
+  border-radius: 50%;
+
+  background: var(--primary-soft);
+
+  color: var(--primary);
+
+  font-size: 11px;
+
+  font-weight: 700;
+}
+
+.user-name-cell strong {
+  color: var(--primary);
+
+  font-size: 11px;
+
+  font-weight: 600;
+}
+
+
+/* =========================================
+   ROLE
+   ========================================= */
+
+.user-role {
+  display: inline-flex;
+
+  padding: 4px 8px;
+
+  border-radius: 12px;
+
+  font-size: 8px;
+
+  font-weight: 600;
+}
+
+.user-role.student {
+  background: #eef3f7;
+
+  color: var(--primary);
+}
+
+.user-role.faculty {
+  background: #f2eef7;
+
+  color: #62527d;
+}
+
+.user-role.admin {
+  background: #f5f0e7;
+
+  color: #85652f;
+}
+
+
+/* =========================================
+   STATUS
+   ========================================= */
+
+.user-status {
+  display: inline-flex;
+
+  padding: 4px 8px;
+
+  border-radius: 12px;
+
+  font-size: 8px;
+
+  font-weight: 600;
+}
+
+.user-status.active {
+  background: var(--success-soft);
+
+  color: var(--success);
+}
+
+.user-status.inactive {
+  background: #faf1ef;
+
+  color: #8a4d3d;
+}
+
+
+/* =========================================
+   ACTIONS
+   ========================================= */
+
+.deactivate-button,
+.activate-button {
+  border-radius: 5px;
+
+  padding: 6px 9px;
+
+  font-size: 9px;
+
+  font-weight: 600;
+
+  cursor: pointer;
+}
+
+.deactivate-button {
+  border: 1px solid #ead8d3;
+
+  background: #faf5f3;
+
+  color: #8a4d3d;
+}
+
+.deactivate-button:hover {
+  background: #f7ebe8;
+}
+
+.activate-button {
+  border: 1px solid #d7eadf;
+
+  background: var(--success-soft);
+
+  color: var(--success);
+}
+
+.activate-button:hover {
+  background: #e5f2ea;
+}
+
+.protected-label {
+  color: var(--ink-soft);
+
+  font-size: 9px;
+
+  font-style: italic;
+}
+
+
+/* =========================================
+   RESPONSIVE
+   ========================================= */
+
+@media (max-width: 850px) {
+
+  .users-main {
+    width: calc(100% - 40px);
+
+    padding-top: 38px;
+  }
+
+}
+
+
+@media (max-width: 600px) {
+
+  .users-main {
+    width: calc(100% - 28px);
+
+    padding-top: 30px;
+
+    padding-bottom: 50px;
+  }
+
+  .users-header h1 {
+    font-size: 25px;
+  }
+
+  .users-subtitle {
+    font-size: 12px;
+  }
+
+}
