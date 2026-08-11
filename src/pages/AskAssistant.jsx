@@ -9,8 +9,10 @@ export default function AskAssistant() {
 
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState("");
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
 
     const value = question.trim();
@@ -19,18 +21,30 @@ export default function AskAssistant() {
       return;
     }
 
-    /*
-      The real document-based assistant will be connected
-      in the next backend phase.
-
-      For now, we are only preparing the interface.
-    */
-
     setLoading(true);
+    setError("");
+    setAnswer("");
 
-    setTimeout(() => {
+    try {
+      const response = await fetch("http://localhost:5000/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ question: value }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setError(data.error || "Something went wrong.");
+      } else {
+        setAnswer(data.answer);
+      }
+    } catch (err) {
+      setError("Unable to connect to the server.");
+    } finally {
       setLoading(false);
-    }, 500);
+    }
   }
 
 
@@ -128,7 +142,18 @@ export default function AskAssistant() {
             </div>
 
           </form>
+                  {error && (
+            <p style={{ color: "#d33", marginTop: "12px" }}>
+              {error}
+            </p>
+          )}
 
+          {answer && (
+            <div style={{ marginTop: "16px", padding: "16px", background: "#f4f5f7", borderRadius: "8px" }}>
+              <strong>Answer:</strong>
+              <p style={{ marginTop: "8px" }}>{answer}</p>
+            </div>
+          )}
         </section>
 
 
