@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from services.document_extractor import extract_pdf_pages
+from services.chunking import chunk_text
+from services.vectorstore import add_chunks, search
+from services.llm import ask_gemini
 from uuid import uuid4
 
 import os
@@ -432,6 +435,14 @@ def upload_document():
 
     db.session.add(document)
     db.session.commit()
+
+    if extension == "pdf":
+        pages = extract_pdf_pages(file_path)
+        full_text = "\n".join(p["text"] for p in pages)
+
+        if full_text.strip():
+            chunks = chunk_text(full_text)
+            add_chunks(chunks, document.id)
 
     return jsonify({
         "message": "Document uploaded successfully.",
@@ -927,6 +938,49 @@ def get_admin_conversations():
     return jsonify({
         "conversations": result
     }), 200
+
+
+# --------------------------------
+# Ask assistant (RAG + Gemini)
+# --------------------------------
+
+@app.route("/api/ask", methods=["POST"])
+def ask():
+
+    user = get_logged_in_user()
+
+    if not user:
+        return jsonify({
+            "error": "Authentication required."
+        }), 401
+
+    data = request.get_json() or {}
+
+    question = data.get("question", "").strip()
+
+    if not question:
+        return jsonify({
+            "error": "Question is required."
+        }), 400
+
+    context = search(question)
+
+    if not context:
+        return jsonify({
+            "question": question,
+            "answer": "I don't have any relevant documents to answer this question yet."
+        }), 200
+
+    answer = ask_gemini(
+        context=context,
+        question=question
+    )
+
+    return jsonify({
+        "question": question,
+        "answer": answer
+    }), 200
+
 # -----------------------------
 # Run application
 # -----------------------------
