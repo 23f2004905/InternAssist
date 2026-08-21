@@ -15,12 +15,25 @@ import os
 from database import db
 from models import User, Document, Conversation, Message
 
+from services.redis_service import (
+    get_chat_history,
+    save_chat_history,
+    delete_chat_history
+)
 
 load_dotenv()
 
 
 app = Flask(__name__)
 
+CORS(
+    app,
+    origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ],
+    supports_credentials=True
+)
 
 # -----------------------------
 # Basic Flask configuration
@@ -77,11 +90,6 @@ Session(app)
 
 db.init_app(app)
 
-CORS(
-    app,
-    supports_credentials=True,
-    origins=["http://localhost:5173"]
-)
 
 def create_default_admin():
     admin_email = "admin@internassist.edu"
@@ -784,12 +792,22 @@ def get_conversation(conversation_id):
             "error": "Conversation not found."
         }), 404
 
-    return jsonify({
-        "conversation": conversation.to_dict(),
-        "messages": [
+    history = get_chat_history(conversation.id)
+
+    if not history:
+        history = [
             message.to_dict()
             for message in conversation.messages
         ]
+
+        save_chat_history(
+            conversation.id,
+            history
+        )
+
+    return jsonify({
+        "conversation": conversation.to_dict(),
+        "messages": history
     }), 200
     
 # --------------------------------
@@ -833,7 +851,6 @@ def add_message(conversation_id):
         return jsonify({
             "error": "Message content is required."
         }), 400
-
     message = Message(
         conversation_id=conversation.id,
         role=role,
@@ -846,10 +863,22 @@ def add_message(conversation_id):
 
     db.session.commit()
 
+    # Update Redis chat cache
+    history = get_chat_history(conversation.id)
+
+    history.append(message.to_dict())
+
+    save_chat_history(
+        conversation.id,
+        history
+    )
+
     return jsonify({
         "message": "Message saved successfully.",
         "data": message.to_dict()
     }), 201
+
+
     
 # --------------------------------
 # Delete conversation
@@ -988,5 +1017,5 @@ def ask():
 if __name__ == "__main__":
     app.run(
         debug=True,
-        port=5000
+        port=5001
     )

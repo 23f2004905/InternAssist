@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
 import "./Users.css";
 
-const API_URL = "http://localhost:5000";
+const API_URL = "http://localhost:5001";
 
 export default function Users() {
 

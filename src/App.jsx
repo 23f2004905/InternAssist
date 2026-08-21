@@ -196,16 +196,13 @@ function AppRoutes() {
           we will build next */}
 
       <Route
-        path="/assistant"
-        element={
-          <ProtectedRoute>
-            <div style={{ padding: 40 }}>
-              Assistant page — coming next
-            </div>
-          </ProtectedRoute>
-        }
-      />
-
+  path="/assistant"
+  element={
+    <ProtectedRoute>
+      <AskAssistant />
+    </ProtectedRoute>
+  }
+/>
       <Route
         path="/documents"
         element={
