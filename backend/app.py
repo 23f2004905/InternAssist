@@ -910,6 +910,8 @@ def delete_conversation(conversation_id):
     db.session.delete(conversation)
     db.session.commit()
 
+    delete_chat_history(conversation.id)
+
     return jsonify({
         "message": "Conversation deleted successfully."
     }), 200
