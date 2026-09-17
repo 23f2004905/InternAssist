@@ -446,12 +446,35 @@ def upload_document():
 
     if extension == "pdf":
         pages = extract_pdf_pages(file_path)
-        full_text = "\n".join(p["text"] for p in pages)
+        chunks = []
 
-        if full_text.strip():
-            chunks = chunk_text(full_text)
-            add_chunks(chunks, document.id)
+    for page in pages:
+        if page["text"].strip():
+            page_chunks = chunk_text(page["text"])
 
+            for chunk in page_chunks:
+                chunks.append({
+                    "text": chunk,
+                    "page_number": page["page_number"]
+                })
+
+    if chunks:
+        add_chunks(chunks, document.id)
+
+    chunks = []
+
+    for page in pages:
+        if page["text"].strip():
+            page_chunks = chunk_text(page["text"])
+
+            for chunk in page_chunks:
+                chunks.append({
+                "text": chunk,
+                "page_number": page["page_number"]
+            })
+
+    if chunks:
+        add_chunks(chunks, document.id)
     return jsonify({
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
@@ -992,13 +1015,29 @@ def ask():
             "error": "Question is required."
         }), 400
 
-    context = search(question)
+    retrieved_chunks = search(question)
 
-    if not context:
+    if not retrieved_chunks:
         return jsonify({
             "question": question,
-            "answer": "I don't have any relevant documents to answer this question yet."
+            "answer": "I don't have any relevant documents to answer this question yet.",
+            "citations": []
+             
         }), 200
+
+    context = "\n\n".join(
+        chunk["text"] for chunk in retrieved_chunks
+    )
+
+    citations = []
+    for chunk in retrieved_chunks:
+        document = Document.query.get(chunk["document_id"])
+
+        citations.append({
+            "document_id": chunk["document_id"],
+            "document_name": document.filename if document else "Unknown document",
+            "page_number": chunk["page_number"]
+        })  
 
     answer = ask_gemini(
         context=context,
@@ -1007,9 +1046,9 @@ def ask():
 
     return jsonify({
         "question": question,
-        "answer": answer
+        "answer": answer,
+        "citations": citations
     }), 200
-
 # -----------------------------
 # Run application
 # -----------------------------

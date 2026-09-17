@@ -8,10 +8,19 @@ collection = client.get_or_create_collection(name="documents")
 
 def add_chunks(chunks, document_id):
     ids = [str(uuid4()) for _ in chunks]
-    metadatas = [{"document_id": document_id} for _ in chunks]
+
+    documents = [chunk["text"] for chunk in chunks]
+
+    metadatas = [
+        {
+            "document_id": document_id,
+            "page_number": chunk["page_number"]
+        }
+        for chunk in chunks
+    ]
 
     collection.add(
-        documents=chunks,
+        documents=documents,
         ids=ids,
         metadatas=metadatas
     )
@@ -24,6 +33,17 @@ def search(query, n_results=5):
     )
 
     if not results["documents"] or not results["documents"][0]:
-        return ""
+        return []
 
-    return "\n\n".join(results["documents"][0])
+    retrieved_chunks = []
+
+    for i, document in enumerate(results["documents"][0]):
+        metadata = results["metadatas"][0][i]
+
+        retrieved_chunks.append({
+            "text": document,
+            "document_id": metadata.get("document_id"),
+            "page_number": metadata.get("page_number")
+        })
+
+    return retrieved_chunks
