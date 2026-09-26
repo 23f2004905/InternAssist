@@ -17,6 +17,9 @@ env/
 
 # Uploaded files
 backend/uploads/
+.env
+backend/.env
+backend/test_gemini.py
 
 # Logs
 *.log

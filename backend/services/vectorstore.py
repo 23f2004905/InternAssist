@@ -26,7 +26,7 @@ def add_chunks(chunks, document_id):
     )
 
 
-def search(query, n_results=5):
+def search(query, n_results=8):
     results = collection.query(
         query_texts=[query],
         n_results=n_results
