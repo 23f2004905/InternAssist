@@ -4,9 +4,13 @@ from flask_session import Session
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-from services.document_extractor import extract_pdf_pages
+from services.document_extractor import extract_document_pages
 from services.chunking import chunk_text
-from services.vectorstore import add_chunks, search
+from services.vectorstore import (
+    add_chunks,
+    search,
+    delete_document_chunks
+)
 from services.llm import ask_gemini
 from uuid import uuid4
 
@@ -35,9 +39,8 @@ CORS(
     supports_credentials=True
 )
 
-# -----------------------------
-# Basic Flask configuration
-# -----------------------------
+
+#Flask configuration
 
 app.config["SECRET_KEY"] = os.getenv(
     "SECRET_KEY",
@@ -48,9 +51,8 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///internassist.db"
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# -----------------------------
-# Document upload configuration
-# -----------------------------
+
+# Document upload
 
 UPLOAD_FOLDER = os.path.join(
     app.root_path,
@@ -64,7 +66,6 @@ os.makedirs(
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# Maximum upload size: 20 MB
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 ALLOWED_EXTENSIONS = {
@@ -73,9 +74,9 @@ ALLOWED_EXTENSIONS = {
     "pptx",
     "txt"
 }
-# -----------------------------
+
 # Session configuration
-# -----------------------------
+
 
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_PERMANENT"] = False
@@ -83,13 +84,10 @@ app.config["SESSION_USE_SIGNER"] = True
 
 Session(app)
 
-
-# -----------------------------
 # Database + CORS
-# -----------------------------
+
 
 db.init_app(app)
-
 
 def create_default_admin():
     admin_email = "admin@internassist.edu"
@@ -114,19 +112,13 @@ def create_default_admin():
     db.session.commit()
 
     print("Default admin account created.")
-    print("Email:", admin_email)
-    print("Password:", admin_password)
 
 
 with app.app_context():
     db.create_all()
     create_default_admin()
 
-
-# -----------------------------
 # Helper function
-# -----------------------------
-
 def get_logged_in_user():
     user_id = session.get("user_id")
 
@@ -149,20 +141,15 @@ def allowed_file(filename):
 
 def get_file_extension(filename):
     return filename.rsplit(".", 1)[1].lower()
-# -----------------------------
-# Home
-# -----------------------------
 
+# Home
 @app.route("/")
 def home():
     return jsonify({
         "message": "InternAssist API is running"
     })
 
-
-# -----------------------------
 # Register
-# -----------------------------
 
 @app.route("/api/auth/register", methods=["POST"])
 def register():
@@ -210,10 +197,8 @@ def register():
     }), 201
 
 
-# -----------------------------
-# Login
-# -----------------------------
 
+# Login
 @app.route("/api/auth/login", methods=["POST"])
 def login():
 
@@ -235,7 +220,7 @@ def login():
         return jsonify({
             "error": "Invalid email or password."
         }), 401
-        
+
     if not user.active:
         return jsonify({
         "error": "Your account has been deactivated. Please contact an administrator."
@@ -246,8 +231,7 @@ def login():
             "error": "Invalid email or password."
         }), 401
 
-    # Store only the user's database ID
-    # in the server-side session.
+
     session["user_id"] = user.id
 
     return jsonify({
@@ -256,9 +240,7 @@ def login():
     }), 200
 
 
-# -----------------------------
-# Current logged-in user
-# -----------------------------
+
 
 @app.route("/api/auth/me", methods=["GET"])
 def current_user():
@@ -275,10 +257,7 @@ def current_user():
     }), 200
 
 
-# -----------------------------
 # Logout
-# -----------------------------
-
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
 
@@ -288,10 +267,6 @@ def logout():
         "message": "Logged out successfully."
     }), 200
 
-
-# -----------------------------
-# Protected test endpoint
-# -----------------------------
 
 @app.route("/api/protected", methods=["GET"])
 def protected():
@@ -308,10 +283,6 @@ def protected():
         "user": user.to_dict()
     })
 
-
-# -----------------------------
-# Admin-only test endpoint
-# -----------------------------
 
 @app.route("/api/admin/test", methods=["GET"])
 def admin_test():
@@ -333,10 +304,8 @@ def admin_test():
         "user": user.to_dict()
     })
 
-# -----------------------------
-# Get all documents
-# -----------------------------
 
+# Get all documents
 @app.route("/api/documents", methods=["GET"])
 def get_documents():
 
@@ -357,12 +326,9 @@ def get_documents():
             for document in documents
         ]
     }), 200
-    
-# -----------------------------
-# Upload document
-# Admin only
-# -----------------------------
 
+
+# Upload document
 @app.route("/api/documents", methods=["POST"])
 def upload_document():
 
@@ -442,25 +408,57 @@ def upload_document():
     )
 
     db.session.add(document)
-    db.session.commit()
 
-    if extension == "pdf":
-        pages = extract_pdf_pages(file_path)
-        full_text = "\n".join(p["text"] for p in pages)
+    document_id = None
 
-        if full_text.strip():
-            chunks = chunk_text(full_text)
-            add_chunks(chunks, document.id)
+    try:
+        db.session.flush()
+        document_id = document.id
+
+        pages = extract_document_pages(file_path, extension)
+        chunks = []
+
+        for page in pages:
+            text = page["text"].strip()
+            if text:
+                for chunk in chunk_text(text):
+                    chunks.append({
+                        "text": chunk,
+                        "page_number": page["page_number"]
+                    })
+
+        if not chunks:
+            raise ValueError("No readable text was found in the document.")
+
+        add_chunks(chunks, document_id)
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+
+        if document_id is not None:
+            try:
+                delete_document_chunks(document_id)
+            except Exception:
+                app.logger.exception("Failed to clean up document chunks.")
+
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            app.logger.exception("Failed to remove uploaded file.")
+
+        app.logger.exception("Document upload failed.")
+        return jsonify({
+            "error": "Document processing failed. Please check the file and try again."
+        }), 500
 
     return jsonify({
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
     }), 201
-    
-# -----------------------------
-# Download document
-# -----------------------------
 
+# Download document
 @app.route(
     "/api/documents/<int:document_id>/download",
     methods=["GET"]
@@ -489,12 +487,9 @@ def download_document(document_id):
         as_attachment=False,
         download_name=document.filename
     )
-    
-# -----------------------------
-# Delete document
-# Admin only
-# -----------------------------
 
+
+# Delete document
 @app.route(
     "/api/documents/<int:document_id>",
     methods=["DELETE"]
@@ -537,18 +532,14 @@ def delete_document(document_id):
     return jsonify({
         "message": "Document deleted successfully."
     }), 200
-    
+
 @app.errorhandler(RequestEntityTooLarge)
 def handle_file_too_large(error):
 
     return jsonify({
         "error": "File is too large. Maximum size is 20 MB."
     }), 413
-    
-# -----------------------------
-# Get all users
-# Admin only
-# -----------------------------
+
 
 @app.route("/api/admin/users", methods=["GET"])
 def get_admin_users():
@@ -575,11 +566,9 @@ def get_admin_users():
             for current_user in users
         ]
     }), 200
-    
-# -----------------------------
+
 # Deactivate user
-# Admin only
-# -----------------------------
+
 
 @app.route(
     "/api/admin/users/<int:user_id>/deactivate",
@@ -624,12 +613,9 @@ def deactivate_user(user_id):
         "message": "User deactivated successfully.",
         "user": target_user.to_dict()
     }), 200
-    
-# -----------------------------
-# Activate user
-# Admin only
-# -----------------------------
 
+
+# Activate user
 @app.route(
     "/api/admin/users/<int:user_id>/activate",
     methods=["POST"]
@@ -663,11 +649,9 @@ def activate_user(user_id):
         "message": "User activated successfully.",
         "user": target_user.to_dict()
     }), 200
-    
-# -----------------------------
-# Admin dashboard statistics
-# -----------------------------
 
+
+# Admin dashboard statistics
 @app.route("/api/admin/stats", methods=["GET"])
 def admin_stats():
 
@@ -694,11 +678,9 @@ def admin_stats():
         "documents": document_count,
         "conversations": conversation_count
     }), 200
-    
-# --------------------------------
-# Get current user's conversations
-# --------------------------------
 
+
+# user's conversations
 @app.route(
     "/api/conversations",
     methods=["GET"]
@@ -724,11 +706,9 @@ def get_conversations():
             for conversation in conversations
         ]
     }), 200
-    
-# --------------------------------
-# Create conversation
-# --------------------------------
 
+
+# Create conversation
 @app.route(
     "/api/conversations",
     methods=["POST"]
@@ -764,11 +744,9 @@ def create_conversation():
         "message": "Conversation created successfully.",
         "conversation": conversation.to_dict()
     }), 201
-    
-# --------------------------------
-# Get one conversation
-# --------------------------------
 
+
+# Get one conversation
 @app.route(
     "/api/conversations/<int:conversation_id>",
     methods=["GET"]
@@ -809,11 +787,9 @@ def get_conversation(conversation_id):
         "conversation": conversation.to_dict(),
         "messages": history
     }), 200
-    
-# --------------------------------
-# Add message to conversation
-# --------------------------------
 
+
+# Add message to conversation
 @app.route(
     "/api/conversations/<int:conversation_id>/messages",
     methods=["POST"]
@@ -863,7 +839,7 @@ def add_message(conversation_id):
 
     db.session.commit()
 
-    # Update Redis chat cache
+
     history = get_chat_history(conversation.id)
 
     history.append(message.to_dict())
@@ -879,11 +855,8 @@ def add_message(conversation_id):
     }), 201
 
 
-    
-# --------------------------------
-# Delete conversation
-# --------------------------------
 
+# Delete conversation
 @app.route(
     "/api/conversations/<int:conversation_id>",
     methods=["DELETE"]
@@ -909,17 +882,14 @@ def delete_conversation(conversation_id):
 
     db.session.delete(conversation)
     db.session.commit()
-
     delete_chat_history(conversation.id)
 
     return jsonify({
         "message": "Conversation deleted successfully."
     }), 200
-    
-# --------------------------------
-# Admin: all conversations
-# --------------------------------
 
+
+# Admin: all conversations
 @app.route(
     "/api/admin/conversations",
     methods=["GET"]
@@ -971,10 +941,8 @@ def get_admin_conversations():
     }), 200
 
 
-# --------------------------------
-# Ask assistant (RAG + Gemini)
-# --------------------------------
 
+# Ask assistant (RAG + Gemini)
 @app.route("/api/ask", methods=["POST"])
 def ask():
 
@@ -994,13 +962,29 @@ def ask():
             "error": "Question is required."
         }), 400
 
-    context = search(question)
+    retrieved_chunks = search(question)
 
-    if not context:
+    if not retrieved_chunks:
         return jsonify({
             "question": question,
-            "answer": "I don't have any relevant documents to answer this question yet."
+            "answer": "I don't have any relevant documents to answer this question yet.",
+            "citations": []
+
         }), 200
+
+    context = "\n\n".join(
+        chunk["text"] for chunk in retrieved_chunks
+    )
+
+    citations = []
+    for chunk in retrieved_chunks:
+        document = Document.query.get(chunk["document_id"])
+
+        citations.append({
+            "document_id": chunk["document_id"],
+            "document_name": document.filename if document else "Unknown document",
+            "page_number": chunk["page_number"]
+        })
 
     answer = ask_gemini(
         context=context,
@@ -1009,13 +993,11 @@ def ask():
 
     return jsonify({
         "question": question,
-        "answer": answer
+        "answer": answer,
+        "citations": citations
     }), 200
 
-# -----------------------------
 # Run application
-# -----------------------------
-
 if __name__ == "__main__":
     app.run(
         debug=True,
