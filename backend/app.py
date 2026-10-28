@@ -456,24 +456,6 @@ def upload_document():
         return jsonify({
             "error": "Document processing failed. Please check the file and try again."
         }), 500
-    if extension == "pdf":
-        pages = extract_pdf_pages(file_path)
-        chunks = []
-
-    for page in pages:
-        if page["text"].strip():
-            page_chunks = chunk_text(page["text"])
-
-            for chunk in page_chunks:
-                chunks.append({
-                    "text": chunk,
-                    "page_number": page["page_number"]
-                })
-
-    
-
-    if chunks:
-        add_chunks(chunks, document.id)
     return jsonify({
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
