@@ -4,9 +4,13 @@ from flask_session import Session
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-from services.document_extractor import extract_pdf_pages
+from services.document_extractor import extract_document_pages
 from services.chunking import chunk_text
-from services.vectorstore import add_chunks, search
+from services.vectorstore import (
+    add_chunks,
+    search,
+    delete_document_chunks
+)
 from services.llm import ask_gemini
 from uuid import uuid4
 
@@ -48,6 +52,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///internassist.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 
+# Document upload
 # Document upload 
 
 UPLOAD_FOLDER = os.path.join(
@@ -108,8 +113,6 @@ def create_default_admin():
     db.session.commit()
 
     print("Default admin account created.")
-    print("Email:", admin_email)
-    print("Password:", admin_password)
 
 
 with app.app_context():
@@ -218,7 +221,7 @@ def login():
         return jsonify({
             "error": "Invalid email or password."
         }), 401
-        
+
     if not user.active:
         return jsonify({
         "error": "Your account has been deactivated. Please contact an administrator."
@@ -228,6 +231,7 @@ def login():
         return jsonify({
             "error": "Invalid email or password."
         }), 401
+
 
     
     session["user_id"] = user.id
@@ -324,6 +328,8 @@ def get_documents():
             for document in documents
         ]
     }), 200
+
+
     
 
 # Upload document
@@ -406,26 +412,50 @@ def upload_document():
     )
 
     db.session.add(document)
-    db.session.commit()
 
-    if extension == "pdf":
-        pages = extract_pdf_pages(file_path)
+    document_id = None
+
+    try:
+        db.session.flush()
+        document_id = document.id
+
+        pages = extract_document_pages(file_path, extension)
         chunks = []
 
-    for page in pages:
-        if page["text"].strip():
-            page_chunks = chunk_text(page["text"])
+        for page in pages:
+            text = page["text"].strip()
+            if text:
+                for chunk in chunk_text(text):
+                    chunks.append({
+                        "text": chunk,
+                        "page_number": page["page_number"]
+                    })
 
-            for chunk in page_chunks:
-                chunks.append({
-                    "text": chunk,
-                    "page_number": page["page_number"]
-                })
+        if not chunks:
+            raise ValueError("No readable text was found in the document.")
 
-    
+        add_chunks(chunks, document_id)
+        db.session.commit()
 
-    if chunks:
-        add_chunks(chunks, document.id)
+    except Exception:
+        db.session.rollback()
+
+        if document_id is not None:
+            try:
+                delete_document_chunks(document_id)
+            except Exception:
+                app.logger.exception("Failed to clean up document chunks.")
+
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            app.logger.exception("Failed to remove uploaded file.")
+
+        app.logger.exception("Document upload failed.")
+        return jsonify({
+            "error": "Document processing failed. Please check the file and try again."
+        }), 500
     return jsonify({
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
@@ -461,6 +491,8 @@ def download_document(document_id):
         as_attachment=False,
         download_name=document.filename
     )
+
+
     
 
 # Delete document
@@ -506,13 +538,14 @@ def delete_document(document_id):
     return jsonify({
         "message": "Document deleted successfully."
     }), 200
-    
+
 @app.errorhandler(RequestEntityTooLarge)
 def handle_file_too_large(error):
 
     return jsonify({
         "error": "File is too large. Maximum size is 20 MB."
     }), 413
+
     
 
 @app.route("/api/admin/users", methods=["GET"])
@@ -540,6 +573,7 @@ def get_admin_users():
             for current_user in users
         ]
     }), 200
+
     
 # Deactivate user
 
@@ -587,6 +621,8 @@ def deactivate_user(user_id):
         "message": "User deactivated successfully.",
         "user": target_user.to_dict()
     }), 200
+
+
     
 
 # Activate user
@@ -623,6 +659,8 @@ def activate_user(user_id):
         "message": "User activated successfully.",
         "user": target_user.to_dict()
     }), 200
+
+
     
 
 # Admin dashboard statistics
@@ -652,6 +690,8 @@ def admin_stats():
         "documents": document_count,
         "conversations": conversation_count
     }), 200
+
+
     
 
 # user's conversations
@@ -680,6 +720,8 @@ def get_conversations():
             for conversation in conversations
         ]
     }), 200
+
+
     
 
 # Create conversation
@@ -718,6 +760,8 @@ def create_conversation():
         "message": "Conversation created successfully.",
         "conversation": conversation.to_dict()
     }), 201
+
+
     
 
 # Get one conversation
@@ -761,6 +805,8 @@ def get_conversation(conversation_id):
         "conversation": conversation.to_dict(),
         "messages": history
     }), 200
+
+
     
 
 # Add message to conversation
@@ -813,6 +859,7 @@ def add_message(conversation_id):
 
     db.session.commit()
 
+
     
     history = get_chat_history(conversation.id)
 
@@ -856,10 +903,13 @@ def delete_conversation(conversation_id):
 
     db.session.delete(conversation)
     db.session.commit()
+    delete_chat_history(conversation.id)
 
     return jsonify({
         "message": "Conversation deleted successfully."
     }), 200
+
+
     
 
 # Admin: all conversations
@@ -942,6 +992,7 @@ def ask():
             "question": question,
             "answer": "I don't have any relevant documents to answer this question yet.",
             "citations": []
+
              
         }), 200
 
@@ -957,7 +1008,7 @@ def ask():
             "document_id": chunk["document_id"],
             "document_name": document.filename if document else "Unknown document",
             "page_number": chunk["page_number"]
-        })  
+        })
 
     answer = ask_gemini(
         context=context,

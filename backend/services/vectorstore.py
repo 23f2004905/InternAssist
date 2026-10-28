@@ -26,6 +26,7 @@ def add_chunks(chunks, document_id):
     )
 
 
+
 def search(query, n_results=8):
     results = collection.query(
         query_texts=[query],
@@ -47,3 +48,10 @@ def search(query, n_results=8):
         })
 
     return retrieved_chunks
+
+
+
+def delete_document_chunks(document_id):
+    collection.delete(
+        where={"document_id": document_id}
+    )

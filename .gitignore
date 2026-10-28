@@ -38,3 +38,17 @@ Thumbs.db
 
 backend/chroma_db/
 backend/flask_session/
+
+# Runtime session data
+backend/flask_session/
+flask_session/
+
+# Local databases and vector data
+instance/
+backend/instance/
+chroma_db/
+backend/chroma_db/
+
+# Local test files and backups
+backend/app.py.backup
+backend/test_upload.txt
