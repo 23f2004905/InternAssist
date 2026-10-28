@@ -53,6 +53,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 
 # Document upload
+# Document upload 
 
 UPLOAD_FOLDER = os.path.join(
     app.root_path,
@@ -232,6 +233,7 @@ def login():
         }), 401
 
 
+    
     session["user_id"] = user.id
 
     return jsonify({
@@ -327,6 +329,8 @@ def get_documents():
         ]
     }), 200
 
+
+    
 
 # Upload document
 @app.route("/api/documents", methods=["POST"])
@@ -452,11 +456,29 @@ def upload_document():
         return jsonify({
             "error": "Document processing failed. Please check the file and try again."
         }), 500
+    if extension == "pdf":
+        pages = extract_pdf_pages(file_path)
+        chunks = []
 
+    for page in pages:
+        if page["text"].strip():
+            page_chunks = chunk_text(page["text"])
+
+            for chunk in page_chunks:
+                chunks.append({
+                    "text": chunk,
+                    "page_number": page["page_number"]
+                })
+
+    
+
+    if chunks:
+        add_chunks(chunks, document.id)
     return jsonify({
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
     }), 201
+    
 
 # Download document
 @app.route(
@@ -488,6 +510,8 @@ def download_document(document_id):
         download_name=document.filename
     )
 
+
+    
 
 # Delete document
 @app.route(
@@ -540,6 +564,7 @@ def handle_file_too_large(error):
         "error": "File is too large. Maximum size is 20 MB."
     }), 413
 
+    
 
 @app.route("/api/admin/users", methods=["GET"])
 def get_admin_users():
@@ -567,6 +592,7 @@ def get_admin_users():
         ]
     }), 200
 
+    
 # Deactivate user
 
 
@@ -615,6 +641,8 @@ def deactivate_user(user_id):
     }), 200
 
 
+    
+
 # Activate user
 @app.route(
     "/api/admin/users/<int:user_id>/activate",
@@ -651,6 +679,8 @@ def activate_user(user_id):
     }), 200
 
 
+    
+
 # Admin dashboard statistics
 @app.route("/api/admin/stats", methods=["GET"])
 def admin_stats():
@@ -680,6 +710,8 @@ def admin_stats():
     }), 200
 
 
+    
+
 # user's conversations
 @app.route(
     "/api/conversations",
@@ -707,6 +739,8 @@ def get_conversations():
         ]
     }), 200
 
+
+    
 
 # Create conversation
 @app.route(
@@ -745,6 +779,8 @@ def create_conversation():
         "conversation": conversation.to_dict()
     }), 201
 
+
+    
 
 # Get one conversation
 @app.route(
@@ -788,6 +824,8 @@ def get_conversation(conversation_id):
         "messages": history
     }), 200
 
+
+    
 
 # Add message to conversation
 @app.route(
@@ -840,6 +878,7 @@ def add_message(conversation_id):
     db.session.commit()
 
 
+    
     history = get_chat_history(conversation.id)
 
     history.append(message.to_dict())
@@ -888,6 +927,8 @@ def delete_conversation(conversation_id):
         "message": "Conversation deleted successfully."
     }), 200
 
+
+    
 
 # Admin: all conversations
 @app.route(
@@ -970,6 +1011,7 @@ def ask():
             "answer": "I don't have any relevant documents to answer this question yet.",
             "citations": []
 
+             
         }), 200
 
     context = "\n\n".join(
