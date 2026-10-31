@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import "./Navbar.css";
@@ -5,6 +6,7 @@ import "./Navbar.css";
 export default function Navbar() {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const role = currentUser?.role;
 
@@ -61,7 +63,7 @@ export default function Navbar() {
         </button>
 
 
-        <div className="navbar-links">
+        <div className={`navbar-links ${menuOpen ? "open" : ""}`}>
 
           {links.map((link) => (
             <NavLink
@@ -72,6 +74,7 @@ export default function Navbar() {
                   isActive ? "active" : ""
                 }`
               }
+              onClick={() => setMenuOpen(false)}
             >
               {link.label}
             </NavLink>
@@ -83,6 +86,10 @@ export default function Navbar() {
 
 
       <div className="navbar-right">
+
+        <button className="navbar-menu" type="button" aria-label="Toggle navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>
+          {menuOpen ? "Close" : "Menu"}
+        </button>
 
         <div className="navbar-user">
 

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
 import "./Users.css";
+import { API_BASE_URL } from "../lib/api";
 
-const API_URL = "http://localhost:5001";
 
 export default function Users() {
 
@@ -24,7 +24,7 @@ export default function Users() {
       setError("");
 
       const response = await fetch(
-        `${API_URL}/api/admin/users`,
+        `${API_BASE_URL}/admin/users`,
         {
           credentials: "include"
         }
@@ -81,7 +81,7 @@ export default function Users() {
     try {
 
       const response = await fetch(
-        `${API_URL}/api/admin/users/${user.id}/${action}`,
+        `${API_BASE_URL}/admin/users/${user.id}/${action}`,
         {
           method: "POST",
           credentials: "include"

@@ -1,278 +1,147 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { apiRequest } from "../lib/api";
 import Navbar from "../components/Navbar";
 import "./AskAssistant.css";
 
+const SUGGESTIONS = [
+  "What documents are required for an internship?",
+  "What are the internship approval requirements?",
+  "How is the internship evaluated?",
+];
+
 export default function AskAssistant() {
-
+  const { conversationId } = useParams();
   const navigate = useNavigate();
-
+  const endRef = useRef(null);
+  const [conversation, setConversation] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [answer, setAnswer] = useState("");
+  const [loadingHistory, setLoadingHistory] = useState(Boolean(conversationId));
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-
-    const value = question.trim();
-
-    if (!value) {
+  useEffect(() => {
+    if (!conversationId) {
+      setConversation(null);
+      setMessages([]);
+      setLoadingHistory(false);
       return;
     }
 
-    setLoading(true);
+    let active = true;
+    setLoadingHistory(true);
+    apiRequest(`/conversations/${conversationId}`)
+      .then((data) => {
+        if (!active) return;
+        setConversation(data.conversation);
+        setMessages(data.messages || []);
+      })
+      .catch((loadError) => active && setError(loadError.message))
+      .finally(() => active && setLoadingHistory(false));
+    return () => { active = false; };
+  }, [conversationId]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, sending]);
+
+  async function ensureConversation(prompt) {
+    if (conversationId) return Number(conversationId);
+    const data = await apiRequest("/conversations", {
+      method: "POST",
+      body: JSON.stringify({ title: prompt.length > 64 ? `${prompt.slice(0, 61)}…` : prompt }),
+    });
+    setConversation(data.conversation);
+    navigate(`/conversations/${data.conversation.id}`, { replace: true });
+    return data.conversation.id;
+  }
+
+  async function saveMessage(id, role, content) {
+    return apiRequest(`/conversations/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ role, content }),
+    });
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    const prompt = question.trim();
+    if (!prompt || sending) return;
+    setSending(true);
     setError("");
-    setAnswer("");
+    setQuestion("");
+    const optimisticUserMessage = { id: `user-${Date.now()}`, role: "user", content: prompt };
+    setMessages((items) => [...items, optimisticUserMessage]);
 
     try {
-      const response = await fetch("http://localhost:5001/api/ask", {
+      const id = await ensureConversation(prompt);
+      await saveMessage(id, "user", prompt);
+      const result = await apiRequest("/ask", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ question: value }),
+        body: JSON.stringify({ question: prompt }),
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setError(data.error || "Something went wrong.");
-      } else {
-        setAnswer(data.answer);
-      }
-    } catch (err) {
-      setError("Unable to connect to the server.");
+      const assistantMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content: result.answer,
+        citations: result.citations || [],
+      };
+      setMessages((items) => [...items, assistantMessage]);
+      await saveMessage(id, "assistant", result.answer);
+    } catch (sendError) {
+      setError(sendError.message);
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   }
 
-
-  function useSuggestion(text) {
-    setQuestion(text);
-  }
-
-
   return (
     <div className="ask-page">
-
       <Navbar />
+      <main className="ask-main chat-shell">
+        <header className="ask-header chat-header">
+          <div><p className="ask-eyebrow">INTERNASSIST</p><h1>{conversation?.title || "Ask Assistant"}</h1><p className="ask-description">Answers are grounded in uploaded institutional documents.</p></div>
+          <button className="new-chat-button" onClick={() => navigate("/assistant")}>+ New chat</button>
+        </header>
 
-      <main className="ask-main">
-
-        {/* Header */}
-
-        <section className="ask-header">
-
-          <p className="ask-eyebrow">
-            INTERNASSIST
-          </p>
-
-          <h1>
-            Ask Assistant
-          </h1>
-
-          <p className="ask-description">
-            Ask questions about internships, academic
-            requirements and institutional policies.
-          </p>
-
-        </section>
-
-
-        {/* Main assistant box */}
-
-        <section className="assistant-panel">
-
-          <div className="assistant-panel-header">
-
-            <div className="assistant-icon">
-              ?
+        <section className="assistant-panel chat-panel" aria-label="Conversation">
+          {loadingHistory ? <div className="chat-empty" role="status">Loading conversation…</div> : messages.length === 0 ? (
+            <div className="chat-empty">
+              <div className="assistant-icon">IA</div>
+              <h2>What would you like to know?</h2>
+              <p>Ask about internships, academic requirements or institutional policies.</p>
+              <div className="chat-suggestions">{SUGGESTIONS.map((item) => <button key={item} onClick={() => setQuestion(item)}>{item}</button>)}</div>
             </div>
-
-            <div>
-
-              <h2>
-                What would you like to know?
-              </h2>
-
-              <p>
-                Ask your question in natural language.
-              </p>
-
+          ) : (
+            <div className="message-list">
+              {messages.map((message, index) => (
+                <article className={`chat-message ${message.role}`} key={message.id || `${message.role}-${index}`}>
+                  <div className="message-avatar">{message.role === "user" ? "You" : "IA"}</div>
+                  <div className="message-body">
+                    <div className="message-role">{message.role === "user" ? "You" : "InternAssist"}</div>
+                    <p>{message.content}</p>
+                    {message.citations?.length > 0 && (
+                      <div className="citations" aria-label="Sources">
+                        <strong>Sources</strong>
+                        <ul>{message.citations.map((citation, citationIndex) => <li key={`${citation.document_id}-${citation.page_number}-${citationIndex}`}><span>{citation.document_name}</span>{citation.page_number ? ` · Page ${citation.page_number}` : ""}</li>)}</ul>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+              {sending && <article className="chat-message assistant"><div className="message-avatar">IA</div><div className="message-body"><div className="message-role">InternAssist</div><div className="typing-indicator" role="status"><span /><span /><span /><em>Searching documents…</em></div></div></article>}
+              <div ref={endRef} />
             </div>
+          )}
 
-          </div>
+          {error && <div className="chat-error" role="alert">{error} <button onClick={() => setError("")}>Dismiss</button></div>}
 
-
-          <form
-            onSubmit={handleSubmit}
-            className="ask-form"
-          >
-
-            <textarea
-              value={question}
-              onChange={(event) =>
-                setQuestion(event.target.value)
-              }
-              placeholder="For example: What documents are required to apply for an internship?"
-              rows="5"
-              disabled={loading}
-            />
-
-            <div className="ask-form-footer">
-
-              <span>
-                Your answer will be based on
-                institutional documents.
-              </span>
-
-              <button
-                type="submit"
-                disabled={
-                  loading ||
-                  !question.trim()
-                }
-              >
-                {loading
-                  ? "Processing..."
-                  : "Ask Assistant →"}
-              </button>
-
-            </div>
-
+          <form className="chat-composer" onSubmit={handleSubmit}>
+            <label htmlFor="assistant-question" className="sr-only">Ask a question</label>
+            <textarea id="assistant-question" value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form.requestSubmit(); } }} placeholder="Ask a question about your documents…" rows="3" disabled={sending || loadingHistory} />
+            <div className="chat-composer-footer"><span>Enter to send · Shift + Enter for a new line</span><button type="submit" disabled={sending || !question.trim()}>{sending ? "Asking…" : "Ask →"}</button></div>
           </form>
-                  {error && (
-            <p style={{ color: "#d33", marginTop: "12px" }}>
-              {error}
-            </p>
-          )}
-
-          {answer && (
-            <div style={{ marginTop: "16px", padding: "16px", background: "#f4f5f7", borderRadius: "8px" }}>
-              <strong>Answer:</strong>
-              <p style={{ marginTop: "8px" }}>{answer}</p>
-            </div>
-          )}
         </section>
-
-
-        {/* Suggested questions */}
-
-        <section className="suggestions-section">
-
-          <div className="section-heading">
-
-            <h2>
-              Suggested questions
-            </h2>
-
-            <p>
-              You can start with one of these common queries.
-            </p>
-
-          </div>
-
-
-          <div className="suggestions-grid">
-
-            <button
-              onClick={() =>
-                useSuggestion(
-                  "What documents are required for an internship?"
-                )
-              }
-            >
-              <span>01</span>
-
-              <strong>
-                Internship documents
-              </strong>
-
-              <small>
-                Find documents required for internship applications.
-              </small>
-            </button>
-
-
-            <button
-              onClick={() =>
-                useSuggestion(
-                  "What are the internship approval requirements?"
-                )
-              }
-            >
-              <span>02</span>
-
-              <strong>
-                Approval requirements
-              </strong>
-
-              <small>
-                Understand the process and requirements for approval.
-              </small>
-            </button>
-
-
-            <button
-              onClick={() =>
-                useSuggestion(
-                  "How is the internship evaluated?"
-                )
-              }
-            >
-              <span>03</span>
-
-              <strong>
-                Internship evaluation
-              </strong>
-
-              <small>
-                Find information about evaluation and assessment.
-              </small>
-            </button>
-
-          </div>
-
-        </section>
-
-
-        {/* Information note */}
-
-        <section className="assistant-note">
-
-          <div className="note-icon">
-            ✓
-          </div>
-
-          <div>
-
-            <strong>
-              Source-based answers
-            </strong>
-
-            <p>
-              InternAssist is designed to answer questions
-              using the institution's uploaded documents
-              and show the source used for the response.
-            </p>
-
-          </div>
-
-        </section>
-
-
-        <button
-          className="back-to-dashboard"
-          onClick={() =>
-            navigate("/dashboard")
-          }
-        >
-          ← Back to dashboard
-        </button>
-
       </main>
-
     </div>
   );
 }

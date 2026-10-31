@@ -181,6 +181,8 @@
   color: #8a4d3d;
 }
 
+.navbar-menu { display: none; border: 1px solid var(--border); background: white; color: var(--primary); padding: 7px 10px; border-radius: 6px; font-weight: 700; }
+
 
 /* --------------------------------
    Responsive
@@ -221,9 +223,12 @@
     display: none;
   }
 
-  .navbar-links {
-    display: none;
-  }
+  .navbar-menu { display: block; }
+
+  .navbar-links { display: none; position: absolute; top: 67px; left: 0; right: 0; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: 0 8px 18px rgba(22,50,79,.1); }
+  .navbar-links.open { display: grid; }
+  .navbar-link { padding: 11px 12px; }
+  .navbar-user { display: none; }
 
   .navbar-right {
     gap: 8px;
