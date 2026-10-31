@@ -717,3 +717,18 @@
   }
 
 }
+.upload-progress { margin-top: 16px; }
+.upload-progress-label { display: flex; justify-content: space-between; color: var(--ink-soft); font-size: 13px; margin-bottom: 6px; }
+.upload-progress progress { width: 100%; height: 9px; accent-color: var(--primary); }
+.documents-refresh { border: 1px solid var(--border); background: white; color: var(--primary); border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+button:disabled { cursor: not-allowed; opacity: .58; }
+
+@media (max-width: 760px) {
+  .documents-table thead { display: none; }
+  .documents-table, .documents-table tbody, .documents-table tr, .documents-table td { display: block; width: 100%; }
+  .documents-table tr { padding: 14px; border-bottom: 1px solid var(--border); }
+  .documents-table td { border: 0; padding: 6px 0; text-align: right; }
+  .documents-table td::before { content: attr(data-label); float: left; color: var(--ink-soft); font-size: 11px; font-weight: 700; text-transform: uppercase; }
+  .document-name-cell { justify-content: flex-end; text-align: left; }
+  .document-actions { justify-content: flex-end; }
+}

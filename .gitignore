@@ -38,3 +38,4 @@ Thumbs.db
 
 backend/chroma_db/
 backend/flask_session/
+flask_session/

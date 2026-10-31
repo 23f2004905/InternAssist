@@ -1,257 +1,55 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { apiRequest } from "../lib/api";
 
 const AuthContext = createContext(null);
 
-const API_URL = "http://localhost:5001/api";
-
-
 export function AuthProvider({ children }) {
-
   const [currentUser, setCurrentUser] = useState(null);
-
   const [loading, setLoading] = useState(true);
 
-
-  // --------------------------------
-  // Check existing session
-  // --------------------------------
-
   useEffect(() => {
-
-    async function checkSession() {
-
-      try {
-
-        const response = await fetch(
-          `${API_URL}/auth/me`,
-          {
-            credentials: "include",
-          }
-        );
-
-        if (response.ok) {
-
-          const data = await response.json();
-
-          setCurrentUser(data.user);
-
-        } else {
-
-          setCurrentUser(null);
-
-        }
-
-      } catch (error) {
-
-        console.error(
-          "Session check failed:",
-          error
-        );
-
-        setCurrentUser(null);
-
-      } finally {
-
-        setLoading(false);
-
-      }
-    }
-
-    checkSession();
-
+    let active = true;
+    apiRequest("/auth/me")
+      .then((data) => active && setCurrentUser(data.user))
+      .catch(() => active && setCurrentUser(null))
+      .finally(() => active && setLoading(false));
+    return () => { active = false; };
   }, []);
 
-
-  // --------------------------------
-  // Login
-  // --------------------------------
-
   async function login(email, password) {
-
     try {
-
-      const response = await fetch(
-        `${API_URL}/auth/login`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          credentials: "include",
-
-          body: JSON.stringify({
-            email,
-            password,
-          }),
-        }
-      );
-
-
-      const data = await response.json();
-
-
-      if (!response.ok) {
-
-        return {
-          ok: false,
-          error:
-            data.error ||
-            "Login failed.",
-        };
-
-      }
-
-
+      const data = await apiRequest("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
       setCurrentUser(data.user);
-
-
-      return {
-        ok: true,
-        user: data.user,
-      };
-
-
+      return { ok: true, user: data.user };
     } catch (error) {
-
-      console.error(error);
-
-      return {
-        ok: false,
-        error:
-          "Unable to connect to the server.",
-      };
-
+      return { ok: false, error: error.message || "Unable to connect to the server." };
     }
   }
-
-
-  // --------------------------------
-  // Register
-  // --------------------------------
 
   async function register(form) {
-
     try {
-
-      const response = await fetch(
-        `${API_URL}/auth/register`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          credentials: "include",
-
-          body: JSON.stringify({
-            name: form.name,
-            email: form.email,
-            password: form.password,
-            role: form.role,
-          }),
-        }
-      );
-
-
-      const data = await response.json();
-
-
-      if (!response.ok) {
-
-        return {
-          ok: false,
-          error:
-            data.error ||
-            "Registration failed.",
-        };
-
-      }
-
-
-      return {
-        ok: true,
-        user: data.user,
-      };
-
-
+      const data = await apiRequest("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ name: form.name, email: form.email, password: form.password, role: form.role }),
+      });
+      return { ok: true, user: data.user };
     } catch (error) {
-
-      console.error(error);
-
-      return {
-        ok: false,
-        error:
-          "Unable to connect to the server.",
-      };
-
+      return { ok: false, error: error.message || "Unable to connect to the server." };
     }
   }
-
-
-  // --------------------------------
-  // Logout
-  // --------------------------------
 
   async function logout() {
-
-    try {
-
-      await fetch(
-        `${API_URL}/auth/logout`,
-        {
-          method: "POST",
-          credentials: "include",
-        }
-      );
-
-    } catch (error) {
-
-      console.error(
-        "Logout error:",
-        error
-      );
-
-    }
-
-    setCurrentUser(null);
+    try { await apiRequest("/auth/logout", { method: "POST" }); }
+    finally { setCurrentUser(null); }
   }
 
-
-  return (
-    <AuthContext.Provider
-      value={{
-        currentUser,
-        loading,
-        login,
-        register,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const value = useMemo(() => ({ currentUser, loading, login, register, logout }), [currentUser, loading]);
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-
+// oxlint-disable-next-line react/only-export-components -- Provider and hook intentionally share one context module.
 export function useAuth() {
-
   const context = useContext(AuthContext);
-
-  if (!context) {
-
-    throw new Error(
-      "useAuth must be used inside AuthProvider"
-    );
-
-  }
-
+  if (!context) throw new Error("useAuth must be used inside AuthProvider");
   return context;
 }

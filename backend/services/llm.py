@@ -5,12 +5,14 @@ import time
 
 load_dotenv()
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key) if api_key else None
 
 
 def ask_gemini(context, question):
+
+    if client is None:
+        return "The AI answer service is not configured. Please ask an administrator to set GEMINI_API_KEY."
 
     context = context[:12000]
 

@@ -9,6 +9,7 @@ from services.chunking import chunk_text
 from services.vectorstore import add_chunks, search
 from services.llm import ask_gemini
 from uuid import uuid4
+from datetime import datetime
 
 import os
 
@@ -408,19 +409,19 @@ def upload_document():
     db.session.add(document)
     db.session.commit()
 
+    chunks = []
     if extension == "pdf":
         pages = extract_pdf_pages(file_path)
-        chunks = []
 
-    for page in pages:
-        if page["text"].strip():
-            page_chunks = chunk_text(page["text"])
+        for page in pages:
+            if page["text"].strip():
+                page_chunks = chunk_text(page["text"])
 
-            for chunk in page_chunks:
-                chunks.append({
-                    "text": chunk,
-                    "page_number": page["page_number"]
-                })
+                for chunk in page_chunks:
+                    chunks.append({
+                        "text": chunk,
+                        "page_number": page["page_number"]
+                    })
 
     
 
@@ -814,7 +815,7 @@ def add_message(conversation_id):
     db.session.commit()
 
     
-    history = get_chat_history(conversation.id)
+    history = get_chat_history(conversation.id) or []
 
     history.append(message.to_dict())
 
@@ -856,6 +857,8 @@ def delete_conversation(conversation_id):
 
     db.session.delete(conversation)
     db.session.commit()
+
+    delete_chat_history(conversation_id)
 
     return jsonify({
         "message": "Conversation deleted successfully."

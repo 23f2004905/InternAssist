@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import "./Dashboard.css";
+import { API_BASE_URL } from "../lib/api";
 
-const API_URL = "http://localhost:5001";
 
 export default function AdminDashboard() {
 
@@ -31,7 +31,7 @@ export default function AdminDashboard() {
       setError("");
 
       const response = await fetch(
-        `${API_URL}/api/admin/stats`,
+        `${API_BASE_URL}/admin/stats`,
         {
           credentials: "include"
         }
