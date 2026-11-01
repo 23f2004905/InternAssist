@@ -52,3 +52,5 @@ backend/chroma_db/
 # Local test files and backups
 backend/app.py.backup
 backend/test_upload.txt
+*.bak
+backend/tests/test_data/

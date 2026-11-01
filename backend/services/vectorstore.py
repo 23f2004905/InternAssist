@@ -1,7 +1,10 @@
 import chromadb
+import os
 from uuid import uuid4
 
-client = chromadb.PersistentClient(path="chroma_db")
+CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "chroma_db")
+
+client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
 collection = client.get_or_create_collection(name="documents")
 

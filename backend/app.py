@@ -47,7 +47,7 @@ app.config["SECRET_KEY"] = os.getenv(
     "development-secret-key"
 )
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///internassist.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///internassist.db")
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
@@ -115,9 +115,6 @@ def create_default_admin():
     print("Default admin account created.")
 
 
-with app.app_context():
-    db.create_all()
-    create_default_admin()
 
 # Helper function
 def get_logged_in_user():
@@ -528,12 +525,21 @@ def delete_document(document_id):
         document.stored_filename
     )
 
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    try:
+        delete_document_chunks(document_id)
 
-    db.session.delete(document)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-    db.session.commit()
+        db.session.delete(document)
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Document deletion failed.")
+        return jsonify({
+            "error": "Document deletion failed."
+        }), 500
 
     return jsonify({
         "message": "Document deleted successfully."
@@ -1023,7 +1029,8 @@ def ask():
 
 # Run application
 if __name__ == "__main__":
-    app.run(
-        debug=True,
-        port=5001
-    )
+    with app.app_context():
+        db.create_all()
+        create_default_admin()
+
+    app.run(debug=True, port=5001)
