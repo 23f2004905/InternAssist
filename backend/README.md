@@ -1,0 +1,110 @@
+# InternAssist Backend
+
+Backend API for InternAssist, an internship placement platform built with Flask, Flask-SQLAlchemy, Flask-Session, Redis, ChromaDB, and Google Gemini.
+
+## Table of Contents
+- [Local Setup and Startup](#local-setup-and-startup)
+- [Running Automated Tests](#running-automated-tests)
+- [Environment Variables Reference](#environment-variables-reference)
+- [Deployment Dependencies & Considerations](#deployment-dependencies--considerations)
+
+---
+
+## Local Setup and Startup
+
+### 1. Prerequisites
+- Python 3.11+ (Python 3.13 supported)
+- Optional: Redis running on `localhost:6379` (routes operate gracefully with or without Redis)
+
+### 2. Virtual Environment Setup
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Environment Configuration
+Copy the sanitized environment template:
+```bash
+cp .env.example .env
+```
+Populate `.env` with appropriate development credentials and keys.
+
+### 4. Run the Development Server
+```bash
+python app.py
+```
+The server will start on `http://127.0.0.1:5001`.
+
+---
+
+## Running Automated Tests
+
+Run the full test suite using `pytest`:
+```bash
+python3 -m pytest -v
+```
+All existing tests and deployment readiness tests will execute against isolated test databases and in-memory/mocked services.
+
+Run Python compilation checks:
+```bash
+python3 -m py_compile *.py services/*.py tests/*.py
+```
+
+Run whitespace / git check:
+```bash
+git diff --check
+```
+
+---
+
+## Environment Variables Reference
+
+| Variable | Default | Purpose / Allowed Values |
+|---|---|---|
+| `FLASK_ENV` | `development` | Set to `production` in production mode (enforces security checks). |
+| `SECRET_KEY` | `development-secret-key` | Session and cryptographic secret. Required to be non-default in production. |
+| `PORT` | `5001` | HTTP port for Flask development server. |
+| `DATABASE_URL` | `sqlite:///internassist.db` | SQLAlchemy database URI. Supports SQLite and PostgreSQL (`postgresql://...` or `postgres://...`). |
+| `DB_POOL_RECYCLE` | `300` | Connection pool recycle interval in seconds. |
+| `ADMIN_NAME` | `System Administrator` | Full name of default administrator created at startup. |
+| `ADMIN_EMAIL` | *(None)* | Email for initial administrator. If omitted, admin creation is skipped. |
+| `ADMIN_PASSWORD` | *(None)* | Secure password for initial administrator. If omitted, admin creation is skipped. |
+| `SESSION_TYPE` | `filesystem` | Session storage backend: `filesystem`, `redis`, or `sqlalchemy`. |
+| `SESSION_FILE_DIR` | `flask_session` | Directory path for filesystem session files. |
+| `SESSION_COOKIE_SECURE`| `false` | Set to `true` in production to enforce HTTPS-only cookies. |
+| `SESSION_COOKIE_SAMESITE`| `Lax` | SameSite cookie policy (`Lax`, `Strict`, `None`). |
+| `REDIS_URL` | *(None)* | Redis connection URL (e.g., `redis://:password@host:6379/0`). |
+| `REDIS_HOST` | `localhost` | Redis server hostname if `REDIS_URL` is unset. |
+| `REDIS_PORT` | `6379` | Redis server port. |
+| `REDIS_PASSWORD` | *(None)* | Redis password if authentication is required. |
+| `REDIS_DB` | `0` | Redis logical database number. |
+| `REDIS_CONNECT_TIMEOUT`| `2.0` | Socket connection timeout in seconds. |
+| `REDIS_TIMEOUT` | `2.0` | Socket read/write timeout in seconds. |
+| `REDIS_CHAT_TTL` | `3600` | Cache time-to-live for conversation history in seconds. |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated list of allowed frontend origins. |
+| `UPLOAD_FOLDER` | `backend/uploads` | Path for storing uploaded documents (PDF, DOCX, PPTX, TXT). |
+| `CHROMA_DB_PATH` | `chroma_db` | Persistent directory for ChromaDB vector embeddings. |
+| `GEMINI_API_KEY` | *(None)* | Google Gemini API key for RAG assistant answers. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name (e.g. `gemini-2.5-flash`, `gemini-2.0-flash`). |
+| `GEMINI_REQUEST_TIMEOUT` | *(None)* | Request timeout in seconds or milliseconds for Gemini API requests. |
+
+---
+
+## Deployment Dependencies & Considerations
+
+1. **PostgreSQL Driver**:
+   - `psycopg2-binary>=2.9.9` is included in `requirements.txt`.
+   - When deploying with PostgreSQL (`DATABASE_URL=postgresql://...`), ensure the environment installs `requirements.txt`. The application automatically converts legacy `postgres://` URLs to `postgresql://`.
+
+2. **Redis Service**:
+   - Production deployments can use Redis for both conversation caching and session persistence (`SESSION_TYPE=redis`).
+   - If Redis becomes unavailable, the application gracefully degrades by reading/writing conversation messages directly from the relational database without route failures.
+
+3. **Persistent Volume Storage**:
+   - `UPLOAD_FOLDER` and `CHROMA_DB_PATH` store uploaded files and vector embeddings on disk.
+   - For containerized deployments (Docker, ECS, Kubernetes, Render), mount persistent volumes for these directories to avoid data loss on container restarts.
+
+4. **Production Startup Safety**:
+   - When `FLASK_ENV=production` or `ENVIRONMENT=production`, the application validates that `SECRET_KEY` is explicitly set and not the default `development-secret-key`, failing startup safely if missing.

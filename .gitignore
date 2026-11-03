@@ -9,6 +9,11 @@ env/
 
 # Environment variables
 .env
+.env.*
+backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
 
 # SQLite database
 *.db

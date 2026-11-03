@@ -12,3 +12,6 @@ python-pptx
 
 chromadb==1.5.9
 google-genai==2.25.0
+
+# PostgreSQL driver for production deployments
+psycopg2-binary>=2.9.9

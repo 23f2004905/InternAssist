@@ -13,6 +13,7 @@ from services.vectorstore import (
 )
 from services.llm import ask_gemini
 from uuid import uuid4
+from datetime import datetime, timezone
 
 import os
 
@@ -30,34 +31,86 @@ load_dotenv()
 
 app = Flask(__name__)
 
+
+def is_production():
+    flask_env = os.getenv("FLASK_ENV", "").strip().lower()
+    app_env = os.getenv("ENVIRONMENT", "").strip().lower()
+    return flask_env == "production" or app_env == "production"
+
+
+def normalize_database_url(url):
+    if not url:
+        return "sqlite:///internassist.db"
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+WEAK_SECRET_KEYS = {
+    "development-secret-key",
+    "secret",
+    "secret-key",
+    "123456",
+    "password",
+    "admin",
+    "changeme",
+    "replace-with-a-secure-random-secret-key",
+}
+
+
+def validate_production_config(application):
+    if is_production():
+        secret = application.config.get("SECRET_KEY", "")
+        if not secret or secret in WEAK_SECRET_KEYS or len(secret) < 32:
+            raise RuntimeError(
+                "SECRET_KEY must be securely configured with at least 32 characters when running in production."
+            )
+
+
+# CORS configuration
+cors_origins_env = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173"
+)
+cors_origins = [
+    origin.strip()
+    for origin in cors_origins_env.split(",")
+    if origin.strip()
+]
+
 CORS(
     app,
-    origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
-    ],
+    origins=cors_origins,
     supports_credentials=True
 )
 
 
-#Flask configuration
+# Flask configuration
+raw_secret_key = os.getenv("SECRET_KEY")
+if is_production():
+    if not raw_secret_key or raw_secret_key in WEAK_SECRET_KEYS or len(raw_secret_key) < 32:
+        raise RuntimeError(
+            "SECRET_KEY must be securely configured with at least 32 characters when running in production."
+        )
+    app.config["SECRET_KEY"] = raw_secret_key
+else:
+    app.config["SECRET_KEY"] = raw_secret_key or "development-secret-key"
 
-app.config["SECRET_KEY"] = os.getenv(
-    "SECRET_KEY",
-    "development-secret-key"
+app.config["SQLALCHEMY_DATABASE_URI"] = normalize_database_url(
+    os.getenv("DATABASE_URL", "sqlite:///internassist.db")
 )
 
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///internassist.db")
-
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,
+    "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "300"))
+}
 
 
 # Document upload
-# Document upload 
-
-UPLOAD_FOLDER = os.path.join(
-    app.root_path,
-    "uploads"
+UPLOAD_FOLDER = os.getenv(
+    "UPLOAD_FOLDER",
+    os.path.join(app.root_path, "uploads")
 )
 
 os.makedirs(
@@ -77,22 +130,45 @@ ALLOWED_EXTENSIONS = {
 }
 
 # Session configuration
-
-
-app.config["SESSION_TYPE"] = "filesystem"
+session_type = os.getenv("SESSION_TYPE", "filesystem").strip().lower()
+app.config["SESSION_TYPE"] = session_type
 app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_USE_SIGNER"] = True
+
+if session_type == "filesystem":
+    session_file_dir = os.getenv(
+        "SESSION_FILE_DIR",
+        os.path.join(app.root_path, "flask_session")
+    )
+    os.makedirs(session_file_dir, exist_ok=True)
+    app.config["SESSION_FILE_DIR"] = session_file_dir
+elif session_type == "redis":
+    from services.redis_service import redis_client
+    app.config["SESSION_REDIS"] = redis_client
+elif session_type == "sqlalchemy":
+    app.config["SESSION_SQLALCHEMY"] = db
+
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+cookie_secure_default = "true" if is_production() else "false"
+app.config["SESSION_COOKIE_SECURE"] = os.getenv(
+    "SESSION_COOKIE_SECURE", cookie_secure_default
+).lower() in ("true", "1")
 
 Session(app)
 
 # Database + CORS
-
-
 db.init_app(app)
 
+
 def create_default_admin():
-    admin_email = "admin@internassist.edu"
-    admin_password = "Admin@12345"
+    admin_email = os.getenv("ADMIN_EMAIL") or os.getenv("DEFAULT_ADMIN_EMAIL")
+    admin_password = os.getenv("ADMIN_PASSWORD") or os.getenv("DEFAULT_ADMIN_PASSWORD")
+    admin_name = os.getenv("ADMIN_NAME") or os.getenv("DEFAULT_ADMIN_NAME", "System Administrator")
+
+    if not admin_email or not admin_password:
+        app.logger.info("Admin credentials not configured via environment variables; skipping admin creation.")
+        return
 
     existing_admin = User.query.filter_by(
         email=admin_email
@@ -102,17 +178,20 @@ def create_default_admin():
         return
 
     admin = User(
-        name="System Administrator",
+        name=admin_name,
         email=admin_email,
         role="admin"
     )
 
     admin.set_password(admin_password)
 
-    db.session.add(admin)
-    db.session.commit()
-
-    print("Default admin account created.")
+    try:
+        db.session.add(admin)
+        db.session.commit()
+        app.logger.info("Administrator account created for %s.", admin_email)
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Failed to create default administrator account.")
 
 
 
@@ -123,7 +202,7 @@ def get_logged_in_user():
     if not user_id:
         return None
 
-    return User.query.get(user_id)
+    return db.session.get(User, user_id)
 
 def allowed_file(filename):
     if not filename:
@@ -186,8 +265,15 @@ def register():
 
     user.set_password(password)
 
-    db.session.add(user)
-    db.session.commit()
+    try:
+        db.session.add(user)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Failed to register user.")
+        return jsonify({
+            "error": "Failed to create account. Please try again."
+        }), 500
 
     return jsonify({
         "message": "Account created successfully.",
@@ -230,7 +316,7 @@ def login():
         }), 401
 
 
-    
+
     session["user_id"] = user.id
 
     return jsonify({
@@ -327,7 +413,7 @@ def get_documents():
     }), 200
 
 
-    
+
 
 # Upload document
 @app.route("/api/documents", methods=["POST"])
@@ -457,7 +543,7 @@ def upload_document():
         "message": "Document uploaded successfully.",
         "document": document.to_dict()
     }), 201
-    
+
 
 # Download document
 @app.route(
@@ -473,7 +559,8 @@ def download_document(document_id):
             "error": "Authentication required."
         }), 401
 
-    document = Document.query.get(
+    document = db.session.get(
+        Document,
         document_id
     )
 
@@ -490,7 +577,7 @@ def download_document(document_id):
     )
 
 
-    
+
 
 # Delete document
 @app.route(
@@ -511,7 +598,8 @@ def delete_document(document_id):
             "error": "Admin access required."
         }), 403
 
-    document = Document.query.get(
+    document = db.session.get(
+        Document,
         document_id
     )
 
@@ -552,7 +640,7 @@ def handle_file_too_large(error):
         "error": "File is too large. Maximum size is 20 MB."
     }), 413
 
-    
+
 
 @app.route("/api/admin/users", methods=["GET"])
 def get_admin_users():
@@ -580,7 +668,7 @@ def get_admin_users():
         ]
     }), 200
 
-    
+
 # Deactivate user
 
 
@@ -602,7 +690,7 @@ def deactivate_user(user_id):
             "error": "Admin access required."
         }), 403
 
-    target_user = User.query.get(user_id)
+    target_user = db.session.get(User, user_id)
 
     if not target_user:
         return jsonify({
@@ -629,7 +717,7 @@ def deactivate_user(user_id):
     }), 200
 
 
-    
+
 
 # Activate user
 @app.route(
@@ -650,7 +738,7 @@ def activate_user(user_id):
             "error": "Admin access required."
         }), 403
 
-    target_user = User.query.get(user_id)
+    target_user = db.session.get(User, user_id)
 
     if not target_user:
         return jsonify({
@@ -667,7 +755,7 @@ def activate_user(user_id):
     }), 200
 
 
-    
+
 
 # Admin dashboard statistics
 @app.route("/api/admin/stats", methods=["GET"])
@@ -698,7 +786,7 @@ def admin_stats():
     }), 200
 
 
-    
+
 
 # user's conversations
 @app.route(
@@ -728,7 +816,7 @@ def get_conversations():
     }), 200
 
 
-    
+
 
 # Create conversation
 @app.route(
@@ -768,7 +856,7 @@ def create_conversation():
     }), 201
 
 
-    
+
 
 # Get one conversation
 @app.route(
@@ -796,16 +884,17 @@ def get_conversation(conversation_id):
 
     history = get_chat_history(conversation.id)
 
-    if not history:
+    if history is None or not history:
         history = [
             message.to_dict()
             for message in conversation.messages
         ]
 
-        save_chat_history(
-            conversation.id,
-            history
-        )
+        if history:
+            save_chat_history(
+                conversation.id,
+                history
+            )
 
     return jsonify({
         "conversation": conversation.to_dict(),
@@ -813,7 +902,7 @@ def get_conversation(conversation_id):
     }), 200
 
 
-    
+
 
 # Add message to conversation
 @app.route(
@@ -861,20 +950,25 @@ def add_message(conversation_id):
 
     db.session.add(message)
 
-    conversation.updated_at = datetime.utcnow()
+    conversation.updated_at = datetime.now(timezone.utc)
 
     db.session.commit()
 
 
-    
+
     history = get_chat_history(conversation.id)
 
-    history.append(message.to_dict())
-
-    save_chat_history(
-        conversation.id,
-        history
-    )
+    if history is not None:
+        history.append(message.to_dict())
+        save_chat_history(
+            conversation.id,
+            history
+        )
+    else:
+        app.logger.warning(
+            "Redis chat cache was not updated for conversation %s due to Redis unavailability.",
+            conversation.id
+        )
 
     return jsonify({
         "message": "Message saved successfully.",
@@ -909,14 +1003,20 @@ def delete_conversation(conversation_id):
 
     db.session.delete(conversation)
     db.session.commit()
-    delete_chat_history(conversation.id)
+    try:
+        delete_chat_history(conversation.id)
+    except Exception:
+        app.logger.exception(
+            "Failed to delete chat history from Redis for conversation %s.",
+            conversation.id
+        )
 
     return jsonify({
         "message": "Conversation deleted successfully."
     }), 200
 
 
-    
+
 
 # Admin: all conversations
 @app.route(
@@ -999,7 +1099,7 @@ def ask():
             "answer": "I don't have any relevant documents to answer this question yet.",
             "citations": []
 
-             
+
         }), 200
 
     context = "\n\n".join(
@@ -1008,7 +1108,7 @@ def ask():
 
     citations = []
     for chunk in retrieved_chunks:
-        document = Document.query.get(chunk["document_id"])
+        document = db.session.get(Document, chunk["document_id"])
 
         citations.append({
             "document_id": chunk["document_id"],
@@ -1033,4 +1133,5 @@ if __name__ == "__main__":
         db.create_all()
         create_default_admin()
 
-    app.run(debug=True, port=5001)
+    port = int(os.getenv("PORT", "5001"))
+    app.run(debug=(not is_production()), port=port)
