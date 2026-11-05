@@ -15,4 +15,5 @@ google-genai==2.25.0
 
 # PostgreSQL driver for production deployments
 psycopg2-binary>=2.9.9
-gunicorn==23.0.0
+gunicorn==23.0.0langchain-text-splitters
+langchain-text-splitters
