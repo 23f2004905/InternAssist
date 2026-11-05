@@ -1,3 +1,4 @@
+
 import os
 import pytest
 from unittest.mock import MagicMock, patch
@@ -16,7 +17,7 @@ from services.llm import ask_gemini, get_gemini_client, DEFAULT_GEMINI_MODEL
 
 
 def test_normalize_database_url():
-    """Verify postgres:// URLs are converted to postgresql:// for SQLAlchemy."""
+    """Verify postgres URLs are converted to postgresql:// for SQLAlchemy."""
     assert normalize_database_url("postgres://user:pass@localhost:5432/mydb") == (
         "postgresql://user:pass@localhost:5432/mydb"
     )
@@ -49,7 +50,6 @@ def test_production_fails_without_secure_secret_key(monkeypatch):
     # Test with secure key
     mock_app = MagicMock()
     mock_app.config = {"SECRET_KEY": "super-secure-production-random-key"}
-    # Should not raise
     validate_production_config(mock_app)
 
 
@@ -126,6 +126,7 @@ def test_conversation_routes_resilient_to_redis_outage(client):
             "role": "student"
         }
     )
+
     client.post(
         "/api/auth/login",
         json={
@@ -195,6 +196,9 @@ def test_gemini_successful_response(monkeypatch):
     """ask_gemini should successfully return model text response and format prompt."""
     from services.llm import reset_gemini_client
     reset_gemini_client()
+
+    # Isolate this test from the local .env model override
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "valid-test-key")
 
     mock_client = MagicMock()
@@ -219,7 +223,9 @@ def test_gemini_api_failure_and_retries(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "dummy-key-for-test")
 
     mock_client = MagicMock()
-    mock_client.models.generate_content.side_effect = Exception("API rate limit or connection error")
+    mock_client.models.generate_content.side_effect = Exception(
+        "API rate limit or connection error"
+    )
 
     with patch("services.llm.get_gemini_client", return_value=mock_client), \
          patch("time.sleep", return_value=None) as mock_sleep:
@@ -274,6 +280,7 @@ def test_gemini_default_model_configuration(monkeypatch):
 def test_redis_client_configuration_from_url(monkeypatch):
     """build_redis_client should support REDIS_URL environment variable."""
     monkeypatch.setenv("REDIS_URL", "redis://:testpass@example.com:6380/2")
+
     with patch("redis.Redis.from_url") as mock_from_url:
         build_redis_client()
         mock_from_url.assert_called_once()
