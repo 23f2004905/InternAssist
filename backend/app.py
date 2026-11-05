@@ -1126,12 +1126,13 @@ def ask():
         "answer": answer,
         "citations": citations
     }), 200
+# Initialize database tables
+with app.app_context():
+    db.create_all()
+    create_default_admin()
 
-# Run application
+
+# Run application locally
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-        create_default_admin()
-
     port = int(os.getenv("PORT", "5001"))
     app.run(debug=(not is_production()), port=port)
