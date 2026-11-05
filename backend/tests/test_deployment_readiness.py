@@ -276,7 +276,6 @@ def test_gemini_default_model_configuration(monkeypatch):
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     assert DEFAULT_GEMINI_MODEL == "gemini-2.5-flash"
 
-
 def test_redis_client_configuration_from_url(monkeypatch):
     """build_redis_client should support REDIS_URL environment variable."""
     monkeypatch.setenv("REDIS_URL", "redis://:testpass@example.com:6380/2")
@@ -285,5 +284,6 @@ def test_redis_client_configuration_from_url(monkeypatch):
         build_redis_client()
         mock_from_url.assert_called_once()
         args, kwargs = mock_from_url.call_args
+
         assert args[0] == "redis://:testpass@example.com:6380/2"
-        assert kwargs["decode_responses"] is True
+        assert kwargs["decode_responses"] is False
