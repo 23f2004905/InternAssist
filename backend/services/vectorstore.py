@@ -38,63 +38,36 @@ def add_chunks(chunks, document_id):
 
 
 def search(query, n_results=8):
-    """Search each uploaded document and combine relevant results."""
-
+    """Retrieve the most relevant chunks across all documents."""
     if not query or not query.strip():
         return []
 
-    all_metadata = collection.get(include=["metadatas"])
+    document_count = collection.count()
 
-    if not all_metadata["metadatas"]:
+    if document_count == 0:
         return []
 
-    document_ids = {
-        metadata.get("document_id")
-        for metadata in all_metadata["metadatas"]
-        if metadata and metadata.get("document_id") is not None
-    }
+    results = collection.query(
+        query_texts=[query],
+        n_results=min(n_results, document_count),
+        include=["documents", "metadatas", "distances"]
+    )
+
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
 
     retrieved_chunks = []
 
-    for document_id in document_ids:
+    for text, metadata, distance in zip(documents, metadatas, distances):
+        retrieved_chunks.append({
+            "text": text,
+            "document_id": metadata.get("document_id"),
+            "page_number": metadata.get("page_number"),
+            "distance": distance
+        })
 
-        document_data = collection.get(
-            where={"document_id": document_id},
-            include=["metadatas"]
-        )
-
-        document_count = len(document_data["ids"])
-
-        if document_count == 0:
-            continue
-
-        results = collection.query(
-            query_texts=[query],
-            n_results=min(4, document_count),
-            where={"document_id": document_id},
-            include=["documents", "metadatas", "distances"]
-        )
-
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
-
-        for text, metadata, distance in zip(
-            documents, metadatas, distances
-        ):
-            retrieved_chunks.append({
-                "text": text,
-                "document_id": metadata.get("document_id"),
-                "page_number": metadata.get("page_number"),
-                "distance": distance
-            })
-
-    retrieved_chunks.sort(
-        key=lambda chunk: chunk["distance"]
-    )
-
-    return retrieved_chunks[:n_results]
-
+    return retrieved_chunks
 
 def delete_document_chunks(document_id):
     """Delete all chunks belonging to a document from ChromaDB."""
