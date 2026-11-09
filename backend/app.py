@@ -1111,9 +1111,9 @@ def ask():
             "error": "Question is required."
         }), 400
 
-    app.logger.info("[ASK] Request started")
 
     # 1. Vector retrieval
+    app.logger.info("[ASK] Request started - beginning vector retrieval")
     retrieval_started = time.perf_counter()
 
     try:
