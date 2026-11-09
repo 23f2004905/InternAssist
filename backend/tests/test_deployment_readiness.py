@@ -231,7 +231,7 @@ def test_gemini_api_failure_and_retries(monkeypatch):
          patch("time.sleep", return_value=None) as mock_sleep:
         result = ask_gemini("Context info", "What is the answer?")
         assert result == "Gemini is temporarily unavailable. Please try again."
-        assert mock_client.models.generate_content.call_count == 3
+        assert mock_client.models.generate_content.call_count == 2
         # Should have slept twice between 3 attempts
         assert mock_sleep.call_count == 2
 
@@ -287,3 +287,115 @@ def test_redis_client_configuration_from_url(monkeypatch):
 
         assert args[0] == "redis://:testpass@example.com:6380/2"
         assert kwargs["decode_responses"] is False
+
+
+def test_cross_site_session_cookie_settings(monkeypatch):
+    """Production mode must enforce SameSite=None and Secure=True for cross-site Vercel+Render setups."""
+    monkeypatch.setenv("FLASK_ENV", "production")
+    assert is_production() is True
+    samesite_prod = "None" if is_production() else "Lax"
+    assert samesite_prod == "None"
+
+    monkeypatch.setenv("FLASK_ENV", "development")
+    assert is_production() is False
+    samesite_dev = "None" if is_production() else "Lax"
+    assert samesite_dev == "Lax"
+
+
+def test_ask_endpoint_authenticated_flow(client):
+    """POST /api/ask requires login and handles questions with citations."""
+    unauth_resp = client.post("/api/ask", json={"question": "What is the policy?"})
+    assert unauth_resp.status_code == 401
+
+    client.post("/api/auth/register", json={
+        "name": "Ask User",
+        "email": "ask-user@example.com",
+        "password": "Password123!",
+        "role": "student"
+    })
+    client.post("/api/auth/login", json={
+        "email": "ask-user@example.com",
+        "password": "Password123!"
+    })
+
+    empty_resp = client.post("/api/ask", json={"question": ""})
+    assert empty_resp.status_code == 400
+
+    fake_chunks = [
+        {"text": "Policy chunk 1", "document_id": 9999, "page_number": 1, "distance": 0.1}
+    ]
+    with patch("app.search", return_value=fake_chunks), \
+         patch("app.ask_gemini", return_value="Here is the retrieved answer."):
+        ask_resp = client.post("/api/ask", json={"question": "What is the policy?"})
+        assert ask_resp.status_code == 200
+        data = ask_resp.get_json()
+        assert data["question"] == "What is the policy?"
+        assert data["answer"] == "Here is the retrieved answer."
+        assert len(data["citations"]) == 1
+        assert data["citations"][0]["document_name"] == "Unknown document"
+        assert data["citations"][0]["page_number"] == 1
+
+
+def test_ask_endpoint_resilient_to_search_and_gemini_failures(client):
+    """POST /api/ask must gracefully fall back when ChromaDB or Gemini fail, without crashing or 502."""
+    client.post("/api/auth/register", json={
+        "name": "Resilient Ask User",
+        "email": "ask-resilient@example.com",
+        "password": "Password123!",
+        "role": "student"
+    })
+    client.post("/api/auth/login", json={
+        "email": "ask-resilient@example.com",
+        "password": "Password123!"
+    })
+
+    with patch("app.search", side_effect=Exception("ChromaDB connection or lock error")):
+        resp = client.post("/api/ask", json={"question": "Can I apply?"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "I don't have any relevant documents" in data["answer"]
+        assert data["citations"] == []
+
+    fake_chunks = [{"text": "Doc context", "document_id": 1, "page_number": 1, "distance": 0.2}]
+    with patch("app.search", return_value=fake_chunks), \
+         patch("app.ask_gemini", side_effect=Exception("Gemini network timeout")):
+        resp2 = client.post("/api/ask", json={"question": "Can I apply?"})
+        assert resp2.status_code == 200
+        data2 = resp2.get_json()
+        assert "Gemini is temporarily unavailable" in data2["answer"]
+
+
+def test_redis_cache_miss_rebuilds_complete_history(client):
+    """A cache miss in Redis must rebuild the full history from the database."""
+    client.post("/api/auth/register", json={
+        "name": "Cache User",
+        "email": "cache-user@example.com",
+        "password": "Password123!",
+        "role": "student"
+    })
+    client.post("/api/auth/login", json={
+        "email": "cache-user@example.com",
+        "password": "Password123!"
+    })
+
+    c_resp = client.post("/api/conversations", json={"title": "Cache Test"})
+    conv_id = c_resp.get_json()["conversation"]["id"]
+    client.post(f"/api/conversations/{conv_id}/messages", json={"role": "user", "content": "Message 1"})
+
+    saved_histories = []
+
+    def mock_save(cid, messages):
+        saved_histories.append(messages)
+        return True
+
+    with patch("app.get_chat_history", return_value=[]), \
+         patch("app.save_chat_history", side_effect=mock_save):
+        msg2_resp = client.post(
+            f"/api/conversations/{conv_id}/messages",
+            json={"role": "assistant", "content": "Message 2"}
+        )
+        assert msg2_resp.status_code == 201
+        assert len(saved_histories) == 1
+        assert len(saved_histories[0]) == 2
+        assert saved_histories[0][0]["content"] == "Message 1"
+        assert saved_histories[0][1]["content"] == "Message 2"

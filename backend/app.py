@@ -148,13 +148,21 @@ elif session_type == "redis":
 elif session_type == "sqlalchemy":
     app.config["SESSION_SQLALCHEMY"] = db
 
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
-cookie_secure_default = "true" if is_production() else "false"
-app.config["SESSION_COOKIE_SECURE"] = os.getenv(
-    "SESSION_COOKIE_SECURE", cookie_secure_default
-).lower() in ("true", "1")
 
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+samesite_default = "None" if is_production() else "Lax"
+samesite_val = os.getenv("SESSION_COOKIE_SAMESITE", samesite_default)
+
+app.config["SESSION_COOKIE_SAMESITE"] = samesite_val
+
+secure_default = "true" if is_production() else "false"
+secure_val = os.getenv("SESSION_COOKIE_SECURE", secure_default)
+
+app.config["SESSION_COOKIE_SECURE"] = (
+    True if samesite_val.lower() == "none"
+    else secure_val.lower() in ("true", "1")
+)
 Session(app)
 
 # Database + CORS
@@ -663,8 +671,8 @@ def get_admin_users():
 
     return jsonify({
         "users": [
-            current_user.to_dict()
-            for current_user in users
+            u.to_dict()
+            for u in users
         ]
     }), 200
 
@@ -884,7 +892,7 @@ def get_conversation(conversation_id):
 
     history = get_chat_history(conversation.id)
 
-    if history is None or not history:
+    if history is None or not history or len(history) != len(conversation.messages):
         history = [
             message.to_dict()
             for message in conversation.messages
@@ -959,11 +967,21 @@ def add_message(conversation_id):
     history = get_chat_history(conversation.id)
 
     if history is not None:
-        history.append(message.to_dict())
-        save_chat_history(
-            conversation.id,
-            history
-        )
+        if history and len(history) == len(conversation.messages) - 1:
+            history.append(message.to_dict())
+            save_chat_history(
+                conversation.id,
+                history
+            )
+        else:
+            full_history = [
+                m.to_dict()
+                for m in conversation.messages
+            ]
+            save_chat_history(
+                conversation.id,
+                full_history
+            )
     else:
         app.logger.warning(
             "Redis chat cache was not updated for conversation %s due to Redis unavailability.",
@@ -1091,15 +1109,17 @@ def ask():
             "error": "Question is required."
         }), 400
 
-    retrieved_chunks = search(question)
+    try:
+        retrieved_chunks = search(question)
+    except Exception as exc:
+        app.logger.warning("Vector search error in /api/ask: %s", type(exc).__name__)
+        retrieved_chunks = []
 
     if not retrieved_chunks:
         return jsonify({
             "question": question,
             "answer": "I don't have any relevant documents to answer this question yet.",
             "citations": []
-
-
         }), 200
 
     context = "\n\n".join(
@@ -1108,7 +1128,10 @@ def ask():
 
     citations = []
     for chunk in retrieved_chunks:
-        document = db.session.get(Document, chunk["document_id"])
+        try:
+            document = db.session.get(Document, chunk["document_id"])
+        except Exception:
+            document = None
 
         citations.append({
             "document_id": chunk["document_id"],
@@ -1116,10 +1139,14 @@ def ask():
             "page_number": chunk["page_number"]
         })
 
-    answer = ask_gemini(
-        context=context,
-        question=question
-    )
+    try:
+        answer = ask_gemini(
+            context=context,
+            question=question
+        )
+    except Exception as exc:
+        app.logger.warning("Error in ask_gemini: %s", type(exc).__name__)
+        answer = "Gemini is temporarily unavailable. Please try again."
 
     return jsonify({
         "question": question,

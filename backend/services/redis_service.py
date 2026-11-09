@@ -23,7 +23,7 @@ def build_redis_client():
     if redis_url:
         return redis.Redis.from_url(
             redis_url,
-           decode_responses=False,
+            decode_responses=False,
             socket_connect_timeout=connect_timeout,
             socket_timeout=socket_timeout,
         )
@@ -32,7 +32,7 @@ def build_redis_client():
         port=int(os.getenv("REDIS_PORT", "6379")),
         password=os.getenv("REDIS_PASSWORD") or None,
         db=int(os.getenv("REDIS_DB", "0")),
-       decode_responses=False,
+        decode_responses=False,
         socket_connect_timeout=connect_timeout,
         socket_timeout=socket_timeout,
     )

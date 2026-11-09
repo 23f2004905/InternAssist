@@ -1,8 +1,11 @@
 
+import logging
 import os
 from uuid import uuid4
 
 import chromadb
+
+logger = logging.getLogger(__name__)
 
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "chroma_db")
 
@@ -42,32 +45,36 @@ def search(query, n_results=8):
     if not query or not query.strip():
         return []
 
-    document_count = collection.count()
+    try:
+        document_count = collection.count()
 
-    if document_count == 0:
+        if document_count == 0:
+            return []
+
+        results = collection.query(
+            query_texts=[query],
+            n_results=min(n_results, document_count),
+            include=["documents", "metadatas", "distances"]
+        )
+
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        retrieved_chunks = []
+
+        for text, metadata, distance in zip(documents, metadatas, distances):
+            retrieved_chunks.append({
+                "text": text,
+                "document_id": metadata.get("document_id"),
+                "page_number": metadata.get("page_number"),
+                "distance": distance
+            })
+
+        return retrieved_chunks
+    except Exception as exc:
+        logger.warning("ChromaDB search failed: %s", type(exc).__name__)
         return []
-
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(n_results, document_count),
-        include=["documents", "metadatas", "distances"]
-    )
-
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-
-    retrieved_chunks = []
-
-    for text, metadata, distance in zip(documents, metadatas, distances):
-        retrieved_chunks.append({
-            "text": text,
-            "document_id": metadata.get("document_id"),
-            "page_number": metadata.get("page_number"),
-            "distance": distance
-        })
-
-    return retrieved_chunks
 
 def delete_document_chunks(document_id):
     """Delete all chunks belonging to a document from ChromaDB."""

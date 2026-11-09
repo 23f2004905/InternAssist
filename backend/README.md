@@ -102,9 +102,21 @@ git diff --check
    - Production deployments can use Redis for both conversation caching and session persistence (`SESSION_TYPE=redis`).
    - If Redis becomes unavailable, the application gracefully degrades by reading/writing conversation messages directly from the relational database without route failures.
 
-3. **Persistent Volume Storage**:
-   - `UPLOAD_FOLDER` and `CHROMA_DB_PATH` store uploaded files and vector embeddings on disk.
-   - For containerized deployments (Docker, ECS, Kubernetes, Render), mount persistent volumes for these directories to avoid data loss on container restarts.
+3. **Persistent Volume Storage on Render & Containers**:
+   - `UPLOAD_FOLDER` and `CHROMA_DB_PATH` store uploaded files and vector embeddings on the local filesystem.
+   - **Render Warning**: Filesystem storage on Render web services is **ephemeral**. Any files stored in the container are **wiped on restarts, redeploys, or free-tier sleep cycles** unless a Render Persistent Disk is attached and configured via `UPLOAD_FOLDER` and `CHROMA_DB_PATH` (e.g., `/var/data/uploads` and `/var/data/chroma_db`).
+   - For persistence across restarts, provision a persistent disk or volume and map these paths accordingly. Do not assume persistence without a persistent disk.
 
-4. **Production Startup Safety**:
-   - When `FLASK_ENV=production` or `ENVIRONMENT=production`, the application validates that `SECRET_KEY` is explicitly set and not the default `development-secret-key`, failing startup safely if missing.
+4. **Production Gunicorn Startup Command on Render**:
+   - To prevent worker timeouts and 502 Bad Gateway errors during ChromaDB embeddings and Gemini API calls, run Gunicorn with 1 worker, thread concurrency, and an extended 120-second timeout:
+   ```bash
+   gunicorn --chdir backend --workers 1 --threads 4 --timeout 120 app:app
+   ```
+   - Running multiple worker processes on constrained hosts (such as Render's 512MB RAM tier) causes memory exhaustion (OOM killer SIGKILL) due to ONNX runtime embedding models duplicated across processes. Using 1 worker with multiple threads keeps memory usage well under 512MB while supporting concurrent requests.
+
+5. **Cross-Site Authentication (Vercel Frontend + Render Backend)**:
+   - When the frontend is hosted on Vercel and the backend on Render, browsers treat API requests as cross-site.
+   - In production (`FLASK_ENV=production`), session cookies automatically configure `SameSite=None` and `Secure=True` so credentials persist across cross-site fetch requests (`credentials: "include"`). Ensure `CORS_ORIGINS` includes your Vercel deployment URL (e.g., `https://your-app.vercel.app`).
+
+6. **Production Startup Safety**:
+   - When `FLASK_ENV=production` or `ENVIRONMENT=production`, the application validates that `SECRET_KEY` is explicitly set to a strong secret (at least 32 characters) and not the default `development-secret-key`, failing startup safely if missing.
