@@ -7,6 +7,9 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from services.document_extractor import extract_document_pages
 from services.chunking import chunk_text
 import time
+import faulthandler
+import logging
+import sys
 from services.vectorstore import (
     add_chunks,
     search,
@@ -31,6 +34,21 @@ load_dotenv()
 
 
 app = Flask(__name__)
+
+# Flask's logger defaults to WARNING under gunicorn, which silently drops
+# every app.logger.info() call (including the [ASK] diagnostics).
+app.logger.setLevel(logging.INFO)
+
+
+def peak_rss_mb():
+    """Peak resident memory of this process in MB (diagnostics only)."""
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:
+        return -1.0
+    # ru_maxrss is bytes on macOS but kilobytes on Linux.
+    return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
 def is_production():
@@ -1113,19 +1131,28 @@ def ask():
 
 
     # 1. Vector retrieval
-    app.logger.info("[ASK] Request started - beginning vector retrieval")
+    app.logger.info(
+        "[ASK] Request started - beginning vector retrieval (peak RSS %.0f MB)",
+        peak_rss_mb()
+    )
     retrieval_started = time.perf_counter()
 
+    # Diagnostic: if retrieval is still running after 45s, dump every
+    # thread's Python stack to stderr so the logs show exactly where it is stuck.
+    faulthandler.dump_traceback_later(45, exit=False)
     try:
         retrieved_chunks = search(question)
     except Exception:
         app.logger.exception("[ASK] Vector search failed")
         retrieved_chunks = []
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
     app.logger.info(
-        "[ASK] Vector retrieval completed in %.2fs (%d chunks)",
+        "[ASK] Vector retrieval completed in %.2fs (%d chunks, peak RSS %.0f MB)",
         time.perf_counter() - retrieval_started,
-        len(retrieved_chunks)
+        len(retrieved_chunks),
+        peak_rss_mb()
     )
 
     if not retrieved_chunks:
@@ -1180,6 +1207,7 @@ def ask():
     # 3. Gemini generation
     gemini_started = time.perf_counter()
 
+    faulthandler.dump_traceback_later(45, exit=False)
     try:
         answer = ask_gemini(
             context=context,
@@ -1188,6 +1216,8 @@ def ask():
     except Exception:
         app.logger.exception("[ASK] Gemini generation failed")
         answer = "Gemini is temporarily unavailable. Please try again."
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
     app.logger.info(
         "[ASK] Gemini generation completed in %.2fs",
