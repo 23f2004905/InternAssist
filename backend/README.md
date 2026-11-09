@@ -120,3 +120,15 @@ git diff --check
 
 6. **Production Startup Safety**:
    - When `FLASK_ENV=production` or `ENVIRONMENT=production`, the application validates that `SECRET_KEY` is explicitly set to a strong secret (at least 32 characters) and not the default `development-secret-key`, failing startup safely if missing.
+
+7. **Live Demonstration & Production Verification Checklist**:
+   - **Step 1: Set Render Environment Variables**:
+     Ensure `CORS_ORIGINS=https://internassist.vercel.app`, `FLASK_ENV=production`, `SECRET_KEY`, `DATABASE_URL`, and `GEMINI_API_KEY` are all set in Render Dashboard.
+   - **Step 2: Log in as Administrator**:
+     Log in using `ADMIN_EMAIL` and `ADMIN_PASSWORD` (configured via Render environment variables).
+   - **Step 3: Upload Knowledge Base Documents**:
+     Because Render's filesystem is ephemeral by default, navigate to the **Documents** page as admin and upload the internship policy document (e.g. `Annexure_2.3.A__Internship_SOP.pdf`). Text extraction and ChromaDB chunk embedding will occur automatically.
+   - **Step 4: Test Assistant Question**:
+     Navigate to **Ask Assistant**, ask a question (e.g., "What documents are required to apply for an internship?"), and verify that the AI answers with markdown formatting and clickable source citations.
+   - **Step 5: Verify Conversation History**:
+     Click **View conversation history →** or navigate to **My Conversations** and open the conversation to confirm that both the student question and AI response are persisted and displayed.

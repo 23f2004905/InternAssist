@@ -399,3 +399,47 @@ def test_redis_cache_miss_rebuilds_complete_history(client):
         assert len(saved_histories[0]) == 2
         assert saved_histories[0][0]["content"] == "Message 1"
         assert saved_histories[0][1]["content"] == "Message 2"
+
+
+def test_ask_endpoint_deduplicates_citations(client):
+    """POST /api/ask should deduplicate multiple chunks from the same document page."""
+    client.post("/api/auth/register", json={
+        "name": "Citation User",
+        "email": "citation-user@example.com",
+        "password": "Password123!",
+        "role": "student"
+    })
+    client.post("/api/auth/login", json={
+        "email": "citation-user@example.com",
+        "password": "Password123!"
+    })
+
+    duplicate_chunks = [
+        {"text": "Chunk 1", "document_id": 1, "page_number": 1, "distance": 0.1},
+        {"text": "Chunk 2", "document_id": 1, "page_number": 1, "distance": 0.15},
+        {"text": "Chunk 3", "document_id": 1, "page_number": 2, "distance": 0.2},
+    ]
+
+    with patch("app.search", return_value=duplicate_chunks), \
+         patch("app.ask_gemini", return_value="Sample answer with deduplicated citations."):
+        resp = client.post("/api/ask", json={"question": "What is the policy?"})
+        assert resp.status_code == 200
+        citations = resp.get_json()["citations"]
+        assert len(citations) == 2
+        pages = [c["page_number"] for c in citations]
+        assert pages == [1, 2]
+
+
+def test_vectorstore_search_none_resilience():
+    """search() should handle None outputs from collection.query without raising exceptions."""
+    from services.vectorstore import search
+    mock_collection = MagicMock()
+    mock_collection.count.return_value = 1
+    mock_collection.query.return_value = {
+        "documents": [None],
+        "metadatas": [None],
+        "distances": [None]
+    }
+    with patch("services.vectorstore.collection", mock_collection):
+        results = search("dummy query")
+        assert results == []

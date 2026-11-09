@@ -1,3 +1,11 @@
+import faulthandler as _faulthandler
+import time as _time
+
+_BOOT_STARTED = _time.perf_counter()
+# Boot tripwire: if importing the app is still running after 60s, print every
+# thread's Python stack to stderr so the Render logs show exactly where it stalled.
+_faulthandler.dump_traceback_later(60, exit=False)
+
 from flask import Flask, request, jsonify, session, send_from_directory
 from flask_cors import CORS
 from flask_session import Session
@@ -49,6 +57,46 @@ def peak_rss_mb():
         return -1.0
     # ru_maxrss is bytes on macOS but kilobytes on Linux.
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+
+
+def environment_snapshot():
+    """One-line description of the container's CPU, memory and thread limits."""
+    def read(*paths):  # cgroup v2 path first, then the cgroup v1 equivalent
+        for path in paths:
+            try:
+                with open(path) as handle:
+                    return handle.read().strip().replace("\n", " | ")
+            except OSError:
+                continue
+        return "n/a"
+
+    threads = "n/a"
+    try:
+        with open("/proc/self/status") as handle:
+            threads = next(
+                (line.split()[1] for line in handle if line.startswith("Threads:")),
+                "n/a"
+            )
+    except OSError:
+        pass
+
+    try:
+        usable_cpus = len(os.sched_getaffinity(0))
+    except AttributeError:
+        usable_cpus = "n/a"
+
+    return (
+        "pid=%s ppid=%s python=%s cpu_count=%s usable_cpus=%s threads=%s "
+        "cpu.max=[%s] pids.max=[%s] pids.current=[%s] memory.max=[%s] memory.current=[%s]"
+    ) % (
+        os.getpid(), os.getppid(), sys.version.split()[0], os.cpu_count(), usable_cpus,
+        threads,
+        read("/sys/fs/cgroup/cpu.max", "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+        read("/sys/fs/cgroup/pids.max", "/sys/fs/cgroup/pids/pids.max"),
+        read("/sys/fs/cgroup/pids.current", "/sys/fs/cgroup/pids/pids.current"),
+        read("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        read("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+    )
 
 
 def is_production():
@@ -1238,8 +1286,17 @@ def ask():
 
 # Initialize database tables
 with app.app_context():
+    _db_started = _time.perf_counter()
     db.create_all()
+    app.logger.info("[BOOT] db.create_all completed in %.2fs", _time.perf_counter() - _db_started)
     create_default_admin()
+
+_faulthandler.cancel_dump_traceback_later()
+app.logger.info(
+    "[BOOT] app import completed in %.2fs (peak RSS %.0f MB)",
+    _time.perf_counter() - _BOOT_STARTED, peak_rss_mb()
+)
+app.logger.info("[ENV] %s", environment_snapshot())
 
 
 # Run application locally

@@ -79,29 +79,56 @@ export default function AskAssistant() {
       await saveMessage(activeConversationId, "user", value);
 
       // Get the RAG/Gemini answer.
-      const response = await fetch(`${API_URL}/api/ask`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ question: value }),
-      });
+      let assistantAnswer = "";
+      let retrievedCitations = [];
+      let askErrorOccurred = false;
 
-      const data = await response.json();
+      try {
+        const response = await fetch(`${API_URL}/api/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ question: value }),
+        });
 
-      if (!response.ok) {
-        throw new Error(data.error || "Assistant request failed.");
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error("The server returned an invalid response. Please try again.");
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || "Assistant request failed.");
+        }
+
+        assistantAnswer = data.answer || "I don't have any relevant documents to answer this question yet.";
+        retrievedCitations = data.citations || [];
+      } catch (askErr) {
+        askErrorOccurred = true;
+        assistantAnswer = "I'm sorry, I was unable to retrieve an answer at this time. Please try again.";
+        setAnswer(assistantAnswer);
+        setError(askErr.message || "Unable to connect to the assistant.");
       }
 
-      // Save the assistant's answer.
-      await saveMessage(
-        activeConversationId,
-        "assistant",
-        data.answer
-      );
+      // Save the assistant's answer so conversation history is never left without an AI response.
+      if (assistantAnswer) {
+        try {
+          await saveMessage(
+            activeConversationId,
+            "assistant",
+            assistantAnswer
+          );
+        } catch (saveErr) {
+          console.error("Failed to save assistant message:", saveErr);
+        }
+      }
 
-      setAnswer(data.answer || "");
-      setCitations(data.citations || []);
-      setQuestion("");
+      if (!askErrorOccurred) {
+        setAnswer(assistantAnswer);
+        setCitations(retrievedCitations);
+        setQuestion("");
+      }
     } catch (err) {
       setError(err.message || "Unable to connect to the server.");
     } finally {
