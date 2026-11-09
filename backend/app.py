@@ -6,6 +6,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from services.document_extractor import extract_document_pages
 from services.chunking import chunk_text
+import time
 from services.vectorstore import (
     add_chunks,
     search,
@@ -1090,8 +1091,10 @@ def get_admin_conversations():
 
 
 # Ask assistant (RAG + Gemini)
+
 @app.route("/api/ask", methods=["POST"])
 def ask():
+    request_started = time.perf_counter()
 
     user = get_logged_in_user()
 
@@ -1101,7 +1104,6 @@ def ask():
         }), 401
 
     data = request.get_json() or {}
-
     question = data.get("question", "").strip()
 
     if not question:
@@ -1109,13 +1111,28 @@ def ask():
             "error": "Question is required."
         }), 400
 
+    app.logger.info("[ASK] Request started")
+
+    # 1. Vector retrieval
+    retrieval_started = time.perf_counter()
+
     try:
         retrieved_chunks = search(question)
-    except Exception as exc:
-        app.logger.warning("Vector search error in /api/ask: %s", type(exc).__name__)
+    except Exception:
+        app.logger.exception("[ASK] Vector search failed")
         retrieved_chunks = []
 
+    app.logger.info(
+        "[ASK] Vector retrieval completed in %.2fs (%d chunks)",
+        time.perf_counter() - retrieval_started,
+        len(retrieved_chunks)
+    )
+
     if not retrieved_chunks:
+        app.logger.info(
+            "[ASK] Total request completed in %.2fs",
+            time.perf_counter() - request_started
+        )
         return jsonify({
             "question": question,
             "answer": "I don't have any relevant documents to answer this question yet.",
@@ -1126,33 +1143,69 @@ def ask():
         chunk["text"] for chunk in retrieved_chunks
     )
 
+    # 2. PostgreSQL citation lookup
+    citation_started = time.perf_counter()
+
     citations = []
+    seen_citations = set()
+
     for chunk in retrieved_chunks:
+        doc_id = chunk.get("document_id")
+        page_num = chunk.get("page_number")
+        citation_key = (doc_id, page_num)
+
+        if citation_key in seen_citations:
+            continue
+
+        seen_citations.add(citation_key)
+
         try:
-            document = db.session.get(Document, chunk["document_id"])
+            document = db.session.get(Document, doc_id) if doc_id else None
         except Exception:
+            app.logger.exception("[ASK] Citation lookup failed")
             document = None
 
         citations.append({
-            "document_id": chunk["document_id"],
+            "document_id": doc_id,
             "document_name": document.filename if document else "Unknown document",
-            "page_number": chunk["page_number"]
+            "page_number": page_num
         })
+
+    app.logger.info(
+        "[ASK] Citation lookup completed in %.2fs (%d citations)",
+        time.perf_counter() - citation_started,
+        len(citations)
+    )
+
+    # 3. Gemini generation
+    gemini_started = time.perf_counter()
 
     try:
         answer = ask_gemini(
             context=context,
             question=question
         )
-    except Exception as exc:
-        app.logger.warning("Error in ask_gemini: %s", type(exc).__name__)
+    except Exception:
+        app.logger.exception("[ASK] Gemini generation failed")
         answer = "Gemini is temporarily unavailable. Please try again."
+
+    app.logger.info(
+        "[ASK] Gemini generation completed in %.2fs",
+        time.perf_counter() - gemini_started
+    )
+
+    # 4. Total request duration
+    app.logger.info(
+        "[ASK] Total request completed in %.2fs",
+        time.perf_counter() - request_started
+    )
 
     return jsonify({
         "question": question,
         "answer": answer,
         "citations": citations
     }), 200
+
 # Initialize database tables
 with app.app_context():
     db.create_all()
