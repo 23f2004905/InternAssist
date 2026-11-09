@@ -7,7 +7,17 @@ import chromadb
 
 logger = logging.getLogger(__name__)
 
-CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "chroma_db")
+_configured_path = os.getenv("CHROMA_DB_PATH")
+if not _configured_path or not _configured_path.strip():
+    CHROMA_DB_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chroma_db"
+    )
+elif not os.path.isabs(_configured_path):
+    CHROMA_DB_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _configured_path
+    )
+else:
+    CHROMA_DB_PATH = _configured_path
 
 os.makedirs(CHROMA_DB_PATH, exist_ok=True)
 
@@ -46,24 +56,20 @@ def search(query, n_results=8):
         return []
 
     try:
-        document_count = collection.count()
-
-        if document_count == 0:
-            return []
-
         results = collection.query(
             query_texts=[query],
-            n_results=min(n_results, document_count),
+            n_results=n_results,
             include=["documents", "metadatas", "distances"]
         )
 
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        documents = (results.get("documents") or [[]])[0] or []
+        metadatas = (results.get("metadatas") or [[]])[0] or []
+        distances = (results.get("distances") or [[]])[0] or []
 
         retrieved_chunks = []
 
         for text, metadata, distance in zip(documents, metadatas, distances):
+            metadata = metadata or {}
             retrieved_chunks.append({
                 "text": text,
                 "document_id": metadata.get("document_id"),
@@ -72,13 +78,21 @@ def search(query, n_results=8):
             })
 
         return retrieved_chunks
+
     except Exception as exc:
         logger.warning("ChromaDB search failed: %s", type(exc).__name__)
         return []
 
 def delete_document_chunks(document_id):
     """Delete all chunks belonging to a document from ChromaDB."""
-
-    collection.delete(
-        where={"document_id": document_id}
-    )
+    try:
+        collection.delete(
+            where={"document_id": document_id}
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete chunks for document %s from ChromaDB: %s",
+            document_id,
+            type(exc).__name__
+        )
+        raise
