@@ -55,7 +55,7 @@ app.logger.setLevel(logging.INFO)
 # source of truth; this per-process worker repairs the local vector index once
 # after the first request reaches a newly started instance.
 _index_recovery_lock = threading.Lock()
-_index_recovery_state = {"status": "not_started", "restored": 0, "failed": 0, "error": None}
+_index_recovery_state = {"status": "not_started", "restored": 0, "failed": 0, "skipped": 0, "error": None, "warning": None}
 _index_recovery_thread = None
 
 def _recover_chroma_index():
@@ -67,7 +67,9 @@ def _recover_chroma_index():
     global _index_recovery_state
     with app.app_context():
         try:
-            _index_recovery_state.update(status="running", restored=0, failed=0, error=None)
+            _index_recovery_state.update(
+                status="running", restored=0, failed=0, skipped=0, error=None, warning=None
+            )
             last_id = 0
             batch_size = 20
             while True:
@@ -79,19 +81,42 @@ def _recover_chroma_index():
                     break
                 for document in documents:
                     last_id = document.id
-                    # A partially inserted batch is not a complete index.
-                    # Trust existing chunks only when the durable DB status
-                    # confirms the entire indexing job committed successfully.
-                    if document.status == "indexed" and indexed_document_ids(document.id):
+                    # Legacy synchronous uploads used status="uploaded" even
+                    # after successful Chroma insertion. Preserve those indexes.
+                    # New uploads use status="pending", so partial chunks from
+                    # an interrupted indexing attempt must never be trusted.
+                    has_chunks = indexed_document_ids(document.id)
+                    if has_chunks and document.status in ("indexed", "uploaded"):
+                        if document.status != "indexed":
+                            document.status = "indexed"
+                            db.session.commit()
                         continue
+
                     stored = db.session.get(DocumentFile, document.id)
                     if stored is None:
-                        _index_recovery_state["failed"] += 1
-                        app.logger.error("[INDEX] Document %s has no durable file bytes", document.id)
+                        # A pre-migration document has no durable source bytes.
+                        # Remove any partial new index and skip only this record;
+                        # don't take the entire Ask endpoint offline.
+                        if has_chunks:
+                            delete_document_chunks(document.id)
+                        document.status = "needs_reupload"
+                        db.session.commit()
+                        _index_recovery_state["skipped"] += 1
+                        app.logger.warning(
+                            "[INDEX] Document %s has no durable bytes or complete legacy index; re-upload required",
+                            document.id,
+                        )
                         continue
                     if hashlib.sha256(stored.content).hexdigest() != stored.sha256:
-                        _index_recovery_state["failed"] += 1
-                        app.logger.error("[INDEX] Document %s failed SHA-256 verification", document.id)
+                        if has_chunks:
+                            delete_document_chunks(document.id)
+                        document.status = "needs_reupload"
+                        db.session.commit()
+                        _index_recovery_state["skipped"] += 1
+                        app.logger.error(
+                            "[INDEX] Document %s failed SHA-256 verification; re-upload required",
+                            document.id,
+                        )
                         continue
 
                     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
@@ -112,8 +137,13 @@ def _recover_chroma_index():
                     delete_document_chunks(document.id)
                     inserted = add_chunks(iter_chunks(), document.id, batch_size=32)
                     if not inserted:
-                        _index_recovery_state["failed"] += 1
-                        app.logger.error("[INDEX] Document %s contains no extractable text", document.id)
+                        document.status = "needs_reupload"
+                        db.session.commit()
+                        _index_recovery_state["skipped"] += 1
+                        app.logger.warning(
+                            "[INDEX] Document %s contains no extractable text; re-upload required",
+                            document.id,
+                        )
                         continue
                     document.status = "indexed"
                     db.session.commit()
@@ -126,9 +156,17 @@ def _recover_chroma_index():
                     db.session.expire_all()
 
             if _index_recovery_state["failed"]:
-                _index_recovery_state.update(status="failed", error="One or more documents could not be restored")
+                _index_recovery_state.update(
+                    status="failed", error="The vector index could not be inspected or rebuilt"
+                )
+            elif _index_recovery_state["skipped"]:
+                _index_recovery_state.update(
+                    status="ready_with_warnings",
+                    error=None,
+                    warning="Some legacy or invalid documents require re-upload",
+                )
             else:
-                _index_recovery_state.update(status="ready", error=None)
+                _index_recovery_state.update(status="ready", error=None, warning=None)
         except Exception as exc:
             db.session.rollback()
             app.logger.exception("[INDEX] ChromaDB recovery failed")
@@ -139,7 +177,7 @@ def _recover_chroma_index():
 def _start_index_recovery():
     global _index_recovery_thread
     with _index_recovery_lock:
-        if _index_recovery_state["status"] in ("running", "ready"):
+        if _index_recovery_state["status"] in ("running", "ready", "ready_with_warnings"):
             return
         if _index_recovery_thread is not None and _index_recovery_thread.is_alive():
             return
