@@ -217,24 +217,55 @@ def test_gemini_successful_response(monkeypatch):
 
 
 def test_gemini_api_failure_and_retries(monkeypatch):
-    """ask_gemini should retry 3 times on exception and fall back without crashing."""
+    """Transient failures retry primary, then fallback, without crashing."""
     from services.llm import reset_gemini_client
     reset_gemini_client()
     monkeypatch.setenv("GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setenv("GEMINI_MODEL", "primary-test-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "fallback-test-model")
+
+    class TransientGeminiError(Exception):
+        code = 503
+        status = "UNAVAILABLE"
 
     mock_client = MagicMock()
-    mock_client.models.generate_content.side_effect = Exception(
-        "API rate limit or connection error"
+    mock_client.models.generate_content.side_effect = TransientGeminiError(
+        "temporary service overload"
     )
 
     with patch("services.llm.get_gemini_client", return_value=mock_client), \
          patch("time.sleep", return_value=None) as mock_sleep:
         result = ask_gemini("Context info", "What is the answer?")
         assert result == "Gemini is temporarily unavailable. Please try again."
-        assert mock_client.models.generate_content.call_count == 2
-        # Should have slept twice between 3 attempts
+        assert mock_client.models.generate_content.call_count == 4
         assert mock_sleep.call_count == 2
 
+
+def test_gemini_primary_transient_failure_uses_fallback(monkeypatch):
+    from services.llm import reset_gemini_client
+    reset_gemini_client()
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy-key-for-test")
+    monkeypatch.setenv("GEMINI_MODEL", "primary-test-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "fallback-test-model")
+
+    class TransientGeminiError(Exception):
+        code = 503
+        status = "UNAVAILABLE"
+
+    mock_client = MagicMock()
+    fallback_response = MagicMock()
+    fallback_response.text = "Answer from fallback model."
+    error = TransientGeminiError("temporary service overload")
+    mock_client.models.generate_content.side_effect = [error, error, fallback_response]
+
+    with patch("services.llm.get_gemini_client", return_value=mock_client), \
+         patch("time.sleep", return_value=None):
+        result = ask_gemini("Document context", "What is the policy?")
+
+    assert result == "Answer from fallback model."
+    assert [call.kwargs["model"] for call in mock_client.models.generate_content.call_args_list] == [
+        "primary-test-model", "primary-test-model", "fallback-test-model"
+    ]
 
 def test_gemini_lazy_initialization(monkeypatch):
     """Gemini client must be initialized lazily on request, not at import time."""
@@ -269,12 +300,19 @@ def test_gemini_configurable_request_timeout(monkeypatch):
         _, kwargs = mock_genai_client.call_args
         assert kwargs["http_options"] is not None
         assert kwargs["http_options"].timeout == 15000
+        assert kwargs["http_options"].retry_options.attempts == 1
 
+
+
+def test_gemini_request_timeout_is_capped(monkeypatch):
+    from services.llm import get_request_timeout
+    monkeypatch.setenv("GEMINI_REQUEST_TIMEOUT", "60.0")
+    assert get_request_timeout() == 25000
 
 def test_gemini_default_model_configuration(monkeypatch):
     """Gemini model name should default to a valid model and allow env override."""
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert DEFAULT_GEMINI_MODEL == "gemini-2.5-flash"
+    assert DEFAULT_GEMINI_MODEL == "gemini-3.8-flash"
 
 def test_redis_client_configuration_from_url(monkeypatch):
     """build_redis_client should support REDIS_URL environment variable."""

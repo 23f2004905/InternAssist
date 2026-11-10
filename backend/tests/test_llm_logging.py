@@ -158,8 +158,10 @@ def test_transient_error_is_retried_then_falls_back(monkeypatch, caplog, sleeps)
     answer = llm.ask_gemini("ctx", "question")
 
     assert answer == FALLBACK
-    assert client.models.calls == 2
-    assert sleeps == [2, 4]
+    # Two attempts for the primary and two for the fallback model.
+    assert client.models.calls == 4
+    assert len(sleeps) == 2
+    assert all(1.0 <= delay <= 1.25 for delay in sleeps)
     assert "attempt 1 failed" in caplog.text
     assert "attempt 2 failed" in caplog.text
     assert "code=503" in caplog.text
