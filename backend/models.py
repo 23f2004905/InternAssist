@@ -236,3 +236,19 @@ class Document(db.Model):
             "uploaded_at": self.uploaded_at.isoformat()
             if self.uploaded_at else None
         }
+
+class DocumentFile(db.Model):
+    """Durable original document bytes; Render's local disk is only a cache."""
+    __tablename__ = "document_files"
+
+    document_id = db.Column(
+        db.Integer, db.ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    content = db.Column(db.LargeBinary, nullable=False)
+    sha256 = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    document = db.relationship(
+        "Document", backref=db.backref("file_blob", uselist=False, cascade="all, delete-orphan")
+    )

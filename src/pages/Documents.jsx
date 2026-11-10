@@ -110,7 +110,9 @@ export default function Documents() {
       }
 
       setMessage(
-        "Document uploaded successfully."
+        data.indexing_pending
+          ? "Document stored safely. Search indexing is pending; try again shortly."
+          : "Document uploaded and indexed successfully."
       );
 
       setTitle("");

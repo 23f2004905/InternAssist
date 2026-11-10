@@ -132,3 +132,14 @@ git diff --check
      Navigate to **Ask Assistant**, ask a question (e.g., "What documents are required to apply for an internship?"), and verify that the AI answers with markdown formatting and clickable source citations.
    - **Step 5: Verify Conversation History**:
      Click **View conversation history →** or navigate to **My Conversations** and open the conversation to confirm that both the student question and AI response are persisted and displayed.
+
+## Durable document storage migration
+
+Before deploying a release that uses `DocumentFile`, apply `migrations/001_document_files.sql`
+against the existing PostgreSQL database (for Neon, use the SQL editor). The table stores
+original upload bytes in PostgreSQL; Render's local `UPLOAD_FOLDER` is only a cache and is
+recreated automatically when a document is downloaded. Existing documents uploaded before
+this migration do not have recoverable bytes in the database: re-upload those files once.
+
+Rollback: `DROP TABLE IF EXISTS document_files;` (this removes stored document bytes, so
+export/back up the table before rolling back). Keep the table for normal application rollback.

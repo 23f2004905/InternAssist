@@ -222,7 +222,7 @@ def test_admin_can_upload_document(client, monkeypatch):
         content_type="multipart/form-data"
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
     assert response.get_json()["document"]["filename"] == "test.txt"
 
 
@@ -240,7 +240,7 @@ def test_admin_can_download_document(client, monkeypatch):
         data={"file": (BytesIO(b"Download test content"), "download.txt")},
         content_type="multipart/form-data"
     )
-    assert upload.status_code == 201
+    assert upload.status_code == 202
 
     document_id = upload.get_json()["document"]["id"]
 
@@ -269,7 +269,7 @@ def test_admin_delete_cleans_up_document(client, monkeypatch):
         data={"file": (BytesIO(b"Delete test content"), "delete.txt")},
         content_type="multipart/form-data"
     )
-    assert upload.status_code == 201
+    assert upload.status_code == 202
 
     document_id = upload.get_json()["document"]["id"]
 

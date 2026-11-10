@@ -351,10 +351,9 @@ def test_ask_endpoint_resilient_to_search_and_gemini_failures(client):
 
     with patch("app.search", side_effect=Exception("ChromaDB connection or lock error")):
         resp = client.post("/api/ask", json={"question": "Can I apply?"})
-        assert resp.status_code == 200
+        assert resp.status_code == 503
         data = resp.get_json()
-        assert "I don't have any relevant documents" in data["answer"]
-        assert data["citations"] == []
+        assert data["status"] == "retrieval_failed"
 
     fake_chunks = [{"text": "Doc context", "document_id": 1, "page_number": 1, "distance": 0.2}]
     with patch("app.search", return_value=fake_chunks), \
