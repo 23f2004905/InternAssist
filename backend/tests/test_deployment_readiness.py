@@ -439,6 +439,12 @@ def test_vectorstore_search_none_resilience():
         "metadatas": [None],
         "distances": [None]
     }
-    with patch("services.vectorstore.collection", mock_collection):
+    with patch(
+        "services.vectorstore._embed_texts",
+        return_value=[[0.0] * 768],
+    ), patch(
+        "services.vectorstore._get_collection",
+        return_value=mock_collection,
+    ):
         results = search("dummy query")
         assert results == []
