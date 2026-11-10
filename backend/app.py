@@ -12,7 +12,7 @@ from flask_session import Session
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-from services.document_extractor import extract_document_pages
+from services.document_extractor import extract_document_pages, iter_document_pages
 from services.chunking import chunk_text
 import time
 import faulthandler
@@ -21,16 +21,20 @@ import sys
 from services.vectorstore import (
     add_chunks,
     search,
-    delete_document_chunks
+    delete_document_chunks,
+    VectorStoreUnavailable,
+    indexed_document_ids
 )
 from services.llm import ask_gemini
 from uuid import uuid4
 from datetime import datetime, timezone
 
 import os
+import hashlib
+import threading
 
 from database import db
-from models import User, Document, Conversation, Message
+from models import User, Document, DocumentFile, Conversation, Message
 
 from services.redis_service import (
     get_chat_history,
@@ -46,6 +50,111 @@ app = Flask(__name__)
 # Flask's logger defaults to WARNING under gunicorn, which silently drops
 # every app.logger.info() call (including the [ASK] diagnostics).
 app.logger.setLevel(logging.INFO)
+
+# ChromaDB is ephemeral on Render. PostgreSQL document_files is the durable
+# source of truth; this per-process worker repairs the local vector index once
+# after the first request reaches a newly started instance.
+_index_recovery_lock = threading.Lock()
+_index_recovery_state = {"status": "not_started", "restored": 0, "failed": 0, "error": None}
+_index_recovery_thread = None
+
+def _recover_chroma_index():
+    """Rebuild missing document indexes one document at a time.
+
+    PostgreSQL is authoritative. The Chroma collection is treated as a
+    disposable cache and inspected with a per-document metadata filter.
+    """
+    global _index_recovery_state
+    with app.app_context():
+        try:
+            _index_recovery_state.update(status="running", restored=0, failed=0, error=None)
+            last_id = 0
+            batch_size = 20
+            while True:
+                documents = (Document.query
+                             .filter(Document.id > last_id)
+                             .order_by(Document.id.asc())
+                             .limit(batch_size).all())
+                if not documents:
+                    break
+                for document in documents:
+                    last_id = document.id
+                    # A partially inserted batch is not a complete index.
+                    # Trust existing chunks only when the durable DB status
+                    # confirms the entire indexing job committed successfully.
+                    if document.status == "indexed" and indexed_document_ids(document.id):
+                        continue
+                    stored = db.session.get(DocumentFile, document.id)
+                    if stored is None:
+                        _index_recovery_state["failed"] += 1
+                        app.logger.error("[INDEX] Document %s has no durable file bytes", document.id)
+                        continue
+                    if hashlib.sha256(stored.content).hexdigest() != stored.sha256:
+                        _index_recovery_state["failed"] += 1
+                        app.logger.error("[INDEX] Document %s failed SHA-256 verification", document.id)
+                        continue
+
+                    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+                    path = os.path.join(app.config["UPLOAD_FOLDER"], document.stored_filename)
+                    with open(path, "wb") as handle:
+                        handle.write(stored.content)
+                    # Release the ORM reference to the BLOB before embedding.
+                    db.session.expunge(stored)
+                    extension = document.file_type.lower().lstrip(".")
+                    def iter_chunks():
+                        for page in iter_document_pages(path, extension):
+                            page_text = page["text"].strip()
+                            if page_text:
+                                for part in chunk_text(page_text):
+                                    yield {"text": part, "page_number": page["page_number"]}
+
+                    # Delete partial prior attempts, then stream chunks in batches.
+                    delete_document_chunks(document.id)
+                    inserted = add_chunks(iter_chunks(), document.id, batch_size=32)
+                    if not inserted:
+                        _index_recovery_state["failed"] += 1
+                        app.logger.error("[INDEX] Document %s contains no extractable text", document.id)
+                        continue
+                    document.status = "indexed"
+                    db.session.commit()
+                    _index_recovery_state["restored"] += 1
+                    app.logger.info("[INDEX] Restored document %s (%d chunks)", document.id, inserted)
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        app.logger.warning("Could not remove temporary recovered file for %s", document.id)
+                    db.session.expire_all()
+
+            if _index_recovery_state["failed"]:
+                _index_recovery_state.update(status="failed", error="One or more documents could not be restored")
+            else:
+                _index_recovery_state.update(status="ready", error=None)
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.exception("[INDEX] ChromaDB recovery failed")
+            _index_recovery_state.update(status="failed", error=type(exc).__name__)
+        finally:
+            db.session.remove()
+
+def _start_index_recovery():
+    global _index_recovery_thread
+    with _index_recovery_lock:
+        if _index_recovery_state["status"] in ("running", "ready"):
+            return
+        if _index_recovery_thread is not None and _index_recovery_thread.is_alive():
+            return
+        _index_recovery_thread = threading.Thread(
+            target=_recover_chroma_index, name="chroma-index-recovery", daemon=True
+        )
+        _index_recovery_thread.start()
+
+@app.before_request
+def start_index_recovery_on_first_request():
+    if app.config.get("TESTING"):
+        return
+    if (request.endpoint not in (None, "static", "upload_document", "admin_index_status", "retry_index_recovery")
+            and _index_recovery_state["status"] == "not_started"):
+        _start_index_recovery()
 
 
 def peak_rss_mb():
@@ -490,134 +599,72 @@ def get_documents():
 
 
 
-# Upload document
+# Upload: persist the original bytes first; indexing runs in the recovery worker.
 @app.route("/api/documents", methods=["POST"])
 def upload_document():
-
     user = get_logged_in_user()
-
     if not user:
-        return jsonify({
-            "error": "Authentication required."
-        }), 401
-
+        return jsonify({"error": "Authentication required."}), 401
     if user.role != "admin":
-        return jsonify({
-            "error": "Admin access required."
-        }), 403
-
+        return jsonify({"error": "Admin access required."}), 403
+    if not app.config.get("TESTING"):
+        if _index_recovery_state["status"] in ("not_started", "running"):
+            _start_index_recovery()
+            return jsonify({"status": "index_rebuilding",
+                            "message": "The document index is being restored. Retry the upload shortly."}), 503, {"Retry-After": "5"}
+        if _index_recovery_state["status"] == "failed":
+            return jsonify({"status": "index_recovery_failed",
+                            "error": "The document index needs administrator attention before uploads can continue."}), 503
     if "file" not in request.files:
-        return jsonify({
-            "error": "No file was provided."
-        }), 400
+        return jsonify({"error": "No file was provided."}), 400
 
-    file = request.files["file"]
+    uploaded = request.files["file"]
+    if not uploaded.filename:
+        return jsonify({"error": "Please select a file."}), 400
+    if not allowed_file(uploaded.filename):
+        return jsonify({"error": "File type not supported. Allowed types: PDF, DOCX, PPTX and TXT."}), 400
 
-    if not file.filename:
-        return jsonify({
-            "error": "Please select a file."
-        }), 400
+    original_filename = secure_filename(uploaded.filename)
+    extension = get_file_extension(original_filename)
+    # Read at most MAX_CONTENT_LENGTH + 1 to enforce the limit without an
+    # unbounded read. Flask also enforces MAX_CONTENT_LENGTH at request level.
+    content = uploaded.stream.read(app.config["MAX_CONTENT_LENGTH"] + 1)
+    if not content:
+        return jsonify({"error": "The uploaded file is empty."}), 400
+    if len(content) > app.config["MAX_CONTENT_LENGTH"]:
+        return jsonify({"error": "File is too large. Maximum size is 20 MB."}), 413
 
-    if not allowed_file(file.filename):
-        return jsonify({
-            "error": "File type not supported. "
-                     "Allowed types: PDF, DOCX, PPTX and TXT."
-        }), 400
-
-    title = request.form.get(
-        "title",
-        ""
-    ).strip()
-
-    if not title:
-        title = os.path.splitext(
-            file.filename
-        )[0]
-
-    original_filename = secure_filename(
-        file.filename
-    )
-
-    extension = get_file_extension(
-        original_filename
-    )
-
-    unique_name = (
-        str(uuid4())
-        + "."
-        + extension
-    )
-
-    file_path = os.path.join(
-        app.config["UPLOAD_FOLDER"],
-        unique_name
-    )
-
-    file.save(file_path)
-
-    file_size = os.path.getsize(
-        file_path
-    )
-
+    title = request.form.get("title", "").strip() or os.path.splitext(original_filename)[0]
+    unique_name = f"{uuid4()}.{extension}"
     document = Document(
-        title=title,
-        filename=original_filename,
-        stored_filename=unique_name,
-        file_type=extension.upper(),
-        file_size=file_size,
-        status="uploaded",
+        title=title, filename=original_filename, stored_filename=unique_name,
+        file_type=extension.upper(), file_size=len(content), status="pending",
         uploaded_by_id=user.id
     )
-
-    db.session.add(document)
-
-    document_id = None
-
     try:
+        db.session.add(document)
         db.session.flush()
-        document_id = document.id
-
-        pages = extract_document_pages(file_path, extension)
-        chunks = []
-
-        for page in pages:
-            text = page["text"].strip()
-            if text:
-                for chunk in chunk_text(text):
-                    chunks.append({
-                        "text": chunk,
-                        "page_number": page["page_number"]
-                    })
-
-        if not chunks:
-            raise ValueError("No readable text was found in the document.")
-
-        add_chunks(chunks, document_id)
+        db.session.add(DocumentFile(
+            document_id=document.id, content=content,
+            sha256=hashlib.sha256(content).hexdigest()
+        ))
         db.session.commit()
-
     except Exception:
         db.session.rollback()
+        app.logger.exception("Could not persist uploaded document")
+        return jsonify({"error": "Document could not be stored. Please try again."}), 500
 
-        if document_id is not None:
-            try:
-                delete_document_chunks(document_id)
-            except Exception:
-                app.logger.exception("Failed to clean up document chunks.")
-
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except OSError:
-            app.logger.exception("Failed to remove uploaded file.")
-
-        app.logger.exception("Document upload failed.")
-        return jsonify({
-            "error": "Document processing failed. Please check the file and try again."
-        }), 500
+    # Schedule recovery/indexing after durable commit. A process restart is safe:
+    # the pending document and original bytes remain in PostgreSQL.
+    if not app.config.get("TESTING"):
+        with _index_recovery_lock:
+            _index_recovery_state.update(status="not_started", error=None)
+        _start_index_recovery()
     return jsonify({
-        "message": "Document uploaded successfully.",
-        "document": document.to_dict()
-    }), 201
+        "message": "Document uploaded and saved. Indexing is running in the background.",
+        "document": document.to_dict(),
+        "indexing_pending": True
+    }), 202
 
 
 # Download document
@@ -644,11 +691,20 @@ def download_document(document_id):
             "error": "Document not found."
         }), 404
 
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"], document.stored_filename)
+    if not os.path.isfile(file_path):
+        stored = db.session.get(DocumentFile, document.id)
+        if stored is None:
+            return jsonify({"error": "Stored document bytes are unavailable."}), 410
+        os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+        if hashlib.sha256(stored.content).hexdigest() != stored.sha256:
+            app.logger.error("Stored document %s failed SHA-256 verification", document.id)
+            return jsonify({"error": "Stored document failed integrity verification."}), 500
+        with open(file_path, "wb") as handle:
+            handle.write(stored.content)
     return send_from_directory(
-        app.config["UPLOAD_FOLDER"],
-        document.stored_filename,
-        as_attachment=False,
-        download_name=document.filename
+        app.config["UPLOAD_FOLDER"], document.stored_filename,
+        as_attachment=False, download_name=document.filename
     )
 
 
@@ -707,6 +763,32 @@ def delete_document(document_id):
     return jsonify({
         "message": "Document deleted successfully."
     }), 200
+
+@app.route("/api/admin/index-status", methods=["GET"])
+def admin_index_status():
+    user = get_logged_in_user()
+    if not user:
+        return jsonify({"error": "Authentication required."}), 401
+    if user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+    if _index_recovery_state["status"] == "not_started":
+        _start_index_recovery()
+    return jsonify(dict(_index_recovery_state)), 200
+
+@app.route("/api/admin/index-recovery/retry", methods=["POST"])
+def retry_index_recovery():
+    global _index_recovery_thread
+    user = get_logged_in_user()
+    if not user:
+        return jsonify({"error": "Authentication required."}), 401
+    if user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+    with _index_recovery_lock:
+        if _index_recovery_thread is not None and _index_recovery_thread.is_alive():
+            return jsonify({"status": "running"}), 202
+        _index_recovery_state.update(status="not_started", error=None)
+    _start_index_recovery()
+    return jsonify({"status": "recovery_started"}), 202
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_file_too_large(error):
@@ -1169,6 +1251,15 @@ def ask():
             "error": "Authentication required."
         }), 401
 
+    if not app.config.get("TESTING"):
+        if _index_recovery_state["status"] in ("not_started", "running"):
+            _start_index_recovery()
+            return jsonify({"status": "index_rebuilding",
+                            "message": "The document index is being restored. Please retry shortly."}), 503, {"Retry-After": "5"}
+        if _index_recovery_state["status"] == "failed":
+            return jsonify({"status": "index_recovery_failed",
+                            "error": "The document index could not be fully restored. Please contact an administrator."}), 503
+
     data = request.get_json() or {}
     question = data.get("question", "").strip()
 
@@ -1188,11 +1279,17 @@ def ask():
     # Diagnostic: if retrieval is still running after 45s, dump every
     # thread's Python stack to stderr so the logs show exactly where it is stuck.
     faulthandler.dump_traceback_later(45, exit=False)
+    retrieval_error = None
     try:
         retrieved_chunks = search(question)
-    except Exception:
-        app.logger.exception("[ASK] Vector search failed")
+    except VectorStoreUnavailable as exc:
+        app.logger.exception("[ASK] Vector search unavailable")
         retrieved_chunks = []
+        retrieval_error = exc
+    except Exception as exc:
+        app.logger.exception("[ASK] Unexpected vector search failure")
+        retrieved_chunks = []
+        retrieval_error = exc
     finally:
         faulthandler.cancel_dump_traceback_later()
 
@@ -1203,6 +1300,10 @@ def ask():
         peak_rss_mb()
     )
 
+    if retrieval_error is not None:
+        return jsonify({"status": "retrieval_failed",
+                        "error": "Document search is temporarily unavailable. Please retry shortly."}), 503
+
     if not retrieved_chunks:
         app.logger.info(
             "[ASK] Total request completed in %.2fs",
@@ -1211,7 +1312,8 @@ def ask():
         return jsonify({
             "question": question,
             "answer": "I don't have any relevant documents to answer this question yet.",
-            "citations": []
+            "citations": [],
+            "status": "no_relevant_chunks"
         }), 200
 
     context = "\n\n".join(

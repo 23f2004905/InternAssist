@@ -1,3 +1,4 @@
+import pytest
 from uuid import uuid4
 
 from services.vectorstore import (
@@ -30,3 +31,14 @@ def test_delete_document_chunks():
     )
 
     assert len(remaining["ids"]) == 0
+
+
+def test_search_raises_when_chroma_is_unavailable(monkeypatch):
+    import services.vectorstore as vectorstore
+
+    def fail():
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(vectorstore, "_get_collection", fail)
+    with pytest.raises(vectorstore.VectorStoreUnavailable):
+        vectorstore.search("test query")

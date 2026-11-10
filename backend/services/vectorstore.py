@@ -93,32 +93,35 @@ class _LazyCollection:
 collection = _LazyCollection()
 
 
-def add_chunks(chunks, document_id):
-    """Add text chunks with document metadata to ChromaDB."""
+def add_chunks(chunks, document_id, batch_size=64):
+    """Add an iterable of chunks in bounded batches; returns inserted count."""
+    from itertools import islice
 
-    if not chunks:
-        return
+    target = _get_collection()
+    iterator = iter(chunks)
+    inserted = 0
+    while True:
+        batch = list(islice(iterator, batch_size))
+        if not batch:
+            break
+        target.add(
+            documents=[chunk["text"] for chunk in batch],
+            ids=[str(uuid4()) for _ in batch],
+            metadatas=[
+                {"document_id": document_id, "page_number": int(chunk["page_number"])}
+                for chunk in batch
+            ],
+        )
+        inserted += len(batch)
+    return inserted
 
-    ids = [str(uuid4()) for _ in chunks]
-    documents = [chunk["text"] for chunk in chunks]
 
-    metadatas = [
-        {
-            "document_id": document_id,
-            "page_number": chunk["page_number"],
-        }
-        for chunk in chunks
-    ]
-
-    _get_collection().add(
-        documents=documents,
-        ids=ids,
-        metadatas=metadatas,
-    )
+class VectorStoreUnavailable(RuntimeError):
+    """Raised when ChromaDB cannot complete a retrieval operation."""
 
 
 def search(query, n_results=8):
-    """Retrieve the most relevant chunks across all documents."""
+    """Retrieve relevant chunks; raise on backend failure (never fake an empty index)."""
 
     if not query or not query.strip():
         return []
@@ -153,17 +156,16 @@ def search(query, n_results=8):
         return retrieved_chunks
 
     except Exception as exc:
-        logger.warning(
-            "ChromaDB search failed: %s",
-            type(exc).__name__,
-        )
-        return []
+        logger.exception("ChromaDB search failed")
+        raise VectorStoreUnavailable("Vector retrieval is temporarily unavailable") from exc
 
 
 def delete_document_chunks(document_id):
     """Delete all chunks belonging to a document from ChromaDB."""
 
     try:
+        # Chroma metadata may contain either integer or string IDs in tests
+        # and older collections; preserve the caller's exact identifier.
         _get_collection().delete(
             where={"document_id": document_id}
         )
@@ -174,3 +176,20 @@ def delete_document_chunks(document_id):
             type(exc).__name__,
         )
         raise
+
+
+def indexed_document_ids(document_id=None):
+    """Check one document's index without loading collection-wide metadata.
+
+    Passing a document ID uses Chroma's metadata filter and keeps recovery
+    memory bounded by that document rather than the entire collection.
+    """
+    try:
+        kwargs = {"include": []}
+        if document_id is not None:
+            kwargs["where"] = {"document_id": document_id}
+        result = _get_collection().get(**kwargs)
+        return bool(result.get("ids"))
+    except Exception as exc:
+        logger.exception("Could not inspect ChromaDB index")
+        raise VectorStoreUnavailable("Vector index inspection is unavailable") from exc
