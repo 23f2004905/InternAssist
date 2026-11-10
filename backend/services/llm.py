@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 from dotenv import load_dotenv
 from google import genai
@@ -12,8 +13,55 @@ logger = logging.getLogger(__name__)
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 20.0
 
+REDACTED = "[REDACTED]"
+MAX_LOGGED_ERROR_CHARS = 500
+
+# Google API keys look like "AIza..." and may also show up as key=... / x-goog-api-key: ...
+_GOOGLE_KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z_\-]{20,}")
+_KEY_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)((?:x-goog-api-key|api[_-]?key|key)\s*[=:]\s*)[^\s&\"',;]+"
+)
+
 _cached_client = None
 _cached_client_key = None
+
+
+def redact_secrets(text):
+    """Strip the configured Gemini API key and key-shaped strings from text."""
+    text = "" if text is None else str(text)
+
+    known_keys = [os.getenv("GEMINI_API_KEY")]
+    if _cached_client_key:
+        known_keys.append(_cached_client_key[0])
+    for key in known_keys:
+        if key and key.strip():
+            text = text.replace(key, REDACTED).replace(key.strip(), REDACTED)
+
+    text = _GOOGLE_KEY_PATTERN.sub(REDACTED, text)
+    return _KEY_ASSIGNMENT_PATTERN.sub(lambda m: m.group(1) + REDACTED, text)
+
+
+def describe_gemini_error(exc):
+    """Return a single-line, secret-free summary of an exception for logs only.
+
+    Includes the exception type, HTTP/status code and provider message. Never
+    return this to API clients.
+    """
+    code = getattr(exc, "code", None)
+    status = redact_secrets(getattr(exc, "status", None) or "")
+    message = getattr(exc, "message", None) or str(exc)
+
+    # Redact before truncating so a key cut at the boundary can't leak partially.
+    message = redact_secrets(" ".join(str(message).split()))
+    if len(message) > MAX_LOGGED_ERROR_CHARS:
+        message = message[:MAX_LOGGED_ERROR_CHARS] + "..."
+
+    return "type=%s code=%s status=%s message=%s" % (
+        type(exc).__name__,
+        code,
+        status or None,
+        message,
+    )
 
 
 def is_permanent_error(exc):
@@ -72,7 +120,7 @@ def get_gemini_client():
     except Exception as exc:
         logger.warning(
             "Failed to initialize Gemini client: %s",
-            type(exc).__name__
+            describe_gemini_error(exc)
         )
         return None
 
@@ -124,7 +172,7 @@ Question:
             logger.warning(
                 "Gemini generation attempt %d failed: %s",
                 i + 1,
-                type(exc).__name__
+                describe_gemini_error(exc)
             )
 
             if is_permanent_error(exc):
