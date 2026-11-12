@@ -6,10 +6,14 @@ _BOOT_STARTED = _time.perf_counter()
 # thread's Python stack to stderr so the Render logs show exactly where it stalled.
 _faulthandler.dump_traceback_later(60, exit=False)
 
+from contextlib import contextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from flask import Flask, request, jsonify, session, send_from_directory
 from flask_cors import CORS
 from flask_session import Session
-from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from services.document_extractor import extract_document_pages, iter_document_pages
@@ -34,15 +38,13 @@ import hashlib
 import threading
 
 from database import db
-from models import User, Document, DocumentFile, Conversation, Message
+from models import User, Document, DocumentFile, Conversation, Message, utcnow_naive
 
 from services.redis_service import (
     get_chat_history,
     save_chat_history,
     delete_chat_history
 )
-
-load_dotenv()
 
 
 app = Flask(__name__)
@@ -57,6 +59,17 @@ app.logger.setLevel(logging.INFO)
 _index_recovery_lock = threading.Lock()
 _index_recovery_state = {"status": "not_started", "restored": 0, "failed": 0, "skipped": 0, "error": None, "warning": None}
 _index_recovery_thread = None
+_initial_recovery_done = False
+_recovery_rescan_needed = False
+
+
+def _cleanup_temp_file(path, document_id):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            app.logger.warning("Could not remove temporary recovered file for %s", document_id)
+
 
 def _recover_chroma_index():
     """Rebuild missing document indexes one document at a time.
@@ -64,120 +77,149 @@ def _recover_chroma_index():
     PostgreSQL is authoritative. The Chroma collection is treated as a
     disposable cache and inspected with a per-document metadata filter.
     """
-    global _index_recovery_state
+    global _index_recovery_state, _initial_recovery_done, _recovery_rescan_needed
     with app.app_context():
         try:
-            _index_recovery_state.update(
-                status="running", restored=0, failed=0, skipped=0, error=None, warning=None
-            )
-            last_id = 0
-            batch_size = 20
             while True:
-                documents = (Document.query
-                             .filter(Document.id > last_id)
-                             .order_by(Document.id.asc())
-                             .limit(batch_size).all())
-                if not documents:
-                    break
-                for document in documents:
-                    last_id = document.id
-                    # Legacy synchronous uploads used status="uploaded" even
-                    # after successful Chroma insertion. Preserve those indexes.
-                    # New uploads use status="pending", so partial chunks from
-                    # an interrupted indexing attempt must never be trusted.
-                    has_chunks = indexed_document_ids(document.id)
-                    if has_chunks and document.status in ("indexed", "uploaded"):
-                        if document.status != "indexed":
+                with _index_recovery_lock:
+                    _recovery_rescan_needed = False
+                    _index_recovery_state.update(
+                        status="running", restored=0, failed=0, skipped=0, error=None, warning=None
+                    )
+                last_id = 0
+                batch_size = 20
+                while True:
+                    documents = (Document.query
+                                 .filter(Document.id > last_id)
+                                 .order_by(Document.id.asc())
+                                 .limit(batch_size).all())
+                    if not documents:
+                        break
+                    for document in documents:
+                        last_id = document.id
+                        # Legacy synchronous uploads used status="uploaded" even
+                        # after successful Chroma insertion. Preserve those indexes.
+                        # New uploads use status="pending", so partial chunks from
+                        # an interrupted indexing attempt must never be trusted.
+                        has_chunks = indexed_document_ids(document.id)
+                        if has_chunks and document.status in ("indexed", "uploaded"):
+                            if document.status != "indexed":
+                                document.status = "indexed"
+                                db.session.commit()
+                            continue
+
+                        stored = db.session.get(DocumentFile, document.id)
+                        if stored is None:
+                            # A pre-migration document has no durable source bytes.
+                            # Remove any partial new index and skip only this record;
+                            # don't take the entire Ask endpoint offline.
+                            if has_chunks:
+                                delete_document_chunks(document.id)
+                            document.status = "needs_reupload"
+                            db.session.commit()
+                            _index_recovery_state["skipped"] += 1
+                            app.logger.warning(
+                                "[INDEX] Document %s has no durable bytes or complete legacy index; re-upload required",
+                                document.id,
+                            )
+                            continue
+                        if hashlib.sha256(stored.content).hexdigest() != stored.sha256:
+                            if has_chunks:
+                                delete_document_chunks(document.id)
+                            document.status = "needs_reupload"
+                            db.session.commit()
+                            _index_recovery_state["skipped"] += 1
+                            app.logger.error(
+                                "[INDEX] Document %s failed SHA-256 verification; re-upload required",
+                                document.id,
+                            )
+                            continue
+
+                        os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+                        path = os.path.join(app.config["UPLOAD_FOLDER"], document.stored_filename)
+                        try:
+                            with open(path, "wb") as handle:
+                                handle.write(stored.content)
+                            # Release the ORM reference to the BLOB before embedding.
+                            db.session.expunge(stored)
+                            extension = document.file_type.lower().lstrip(".")
+
+                            def iter_chunks():
+                                for page in iter_document_pages(path, extension):
+                                    page_text = page["text"].strip()
+                                    if page_text:
+                                        for part in chunk_text(page_text):
+                                            yield {"text": part, "page_number": page["page_number"]}
+
+                            # Delete partial prior attempts, then stream chunks in batches.
+                            delete_document_chunks(document.id)
+                            inserted = add_chunks(iter_chunks(), document.id, batch_size=32)
+                            if not inserted:
+                                document.status = "needs_reupload"
+                                db.session.commit()
+                                _index_recovery_state["skipped"] += 1
+                                app.logger.warning(
+                                    "[INDEX] Document %s contains no extractable text; re-upload required",
+                                    document.id,
+                                )
+                                continue
                             document.status = "indexed"
                             db.session.commit()
-                        continue
+                            _index_recovery_state["restored"] += 1
+                            app.logger.info("[INDEX] Restored document %s (%d chunks)", document.id, inserted)
+                        except VectorStoreUnavailable as exc:
+                            db.session.rollback()
+                            _index_recovery_state["failed"] += 1
+                            app.logger.warning(
+                                "[INDEX] Vector embedding unavailable for document %s: %s",
+                                document.id,
+                                exc,
+                            )
+                        except Exception as exc:
+                            db.session.rollback()
+                            app.logger.exception(
+                                "[INDEX] Failed to extract/index document %s",
+                                document.id,
+                            )
+                            document.status = "needs_reupload"
+                            db.session.commit()
+                            _index_recovery_state["skipped"] += 1
+                        finally:
+                            _cleanup_temp_file(path, document.id)
+                            db.session.expire_all()
 
-                    stored = db.session.get(DocumentFile, document.id)
-                    if stored is None:
-                        # A pre-migration document has no durable source bytes.
-                        # Remove any partial new index and skip only this record;
-                        # don't take the entire Ask endpoint offline.
-                        if has_chunks:
-                            delete_document_chunks(document.id)
-                        document.status = "needs_reupload"
-                        db.session.commit()
-                        _index_recovery_state["skipped"] += 1
-                        app.logger.warning(
-                            "[INDEX] Document %s has no durable bytes or complete legacy index; re-upload required",
-                            document.id,
+                with _index_recovery_lock:
+                    if _recovery_rescan_needed:
+                        continue
+                    _initial_recovery_done = True
+                    if _index_recovery_state["failed"]:
+                        _index_recovery_state.update(
+                            status="failed", error="The vector index could not be inspected or rebuilt"
                         )
-                        continue
-                    if hashlib.sha256(stored.content).hexdigest() != stored.sha256:
-                        if has_chunks:
-                            delete_document_chunks(document.id)
-                        document.status = "needs_reupload"
-                        db.session.commit()
-                        _index_recovery_state["skipped"] += 1
-                        app.logger.error(
-                            "[INDEX] Document %s failed SHA-256 verification; re-upload required",
-                            document.id,
+                    elif _index_recovery_state["skipped"]:
+                        _index_recovery_state.update(
+                            status="ready_with_warnings",
+                            error=None,
+                            warning="Some legacy or invalid documents require re-upload",
                         )
-                        continue
-
-                    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-                    path = os.path.join(app.config["UPLOAD_FOLDER"], document.stored_filename)
-                    with open(path, "wb") as handle:
-                        handle.write(stored.content)
-                    # Release the ORM reference to the BLOB before embedding.
-                    db.session.expunge(stored)
-                    extension = document.file_type.lower().lstrip(".")
-                    def iter_chunks():
-                        for page in iter_document_pages(path, extension):
-                            page_text = page["text"].strip()
-                            if page_text:
-                                for part in chunk_text(page_text):
-                                    yield {"text": part, "page_number": page["page_number"]}
-
-                    # Delete partial prior attempts, then stream chunks in batches.
-                    delete_document_chunks(document.id)
-                    inserted = add_chunks(iter_chunks(), document.id, batch_size=32)
-                    if not inserted:
-                        document.status = "needs_reupload"
-                        db.session.commit()
-                        _index_recovery_state["skipped"] += 1
-                        app.logger.warning(
-                            "[INDEX] Document %s contains no extractable text; re-upload required",
-                            document.id,
-                        )
-                        continue
-                    document.status = "indexed"
-                    db.session.commit()
-                    _index_recovery_state["restored"] += 1
-                    app.logger.info("[INDEX] Restored document %s (%d chunks)", document.id, inserted)
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        app.logger.warning("Could not remove temporary recovered file for %s", document.id)
-                    db.session.expire_all()
-
-            if _index_recovery_state["failed"]:
-                _index_recovery_state.update(
-                    status="failed", error="The vector index could not be inspected or rebuilt"
-                )
-            elif _index_recovery_state["skipped"]:
-                _index_recovery_state.update(
-                    status="ready_with_warnings",
-                    error=None,
-                    warning="Some legacy or invalid documents require re-upload",
-                )
-            else:
-                _index_recovery_state.update(status="ready", error=None, warning=None)
+                    else:
+                        _index_recovery_state.update(status="ready", error=None, warning=None)
+                    break
         except Exception as exc:
             db.session.rollback()
             app.logger.exception("[INDEX] ChromaDB recovery failed")
-            _index_recovery_state.update(status="failed", error=type(exc).__name__)
+            with _index_recovery_lock:
+                _initial_recovery_done = True
+                _index_recovery_state.update(status="failed", error=type(exc).__name__)
         finally:
             db.session.remove()
 
-def _start_index_recovery():
-    global _index_recovery_thread
+def _start_index_recovery(force=False):
+    global _index_recovery_thread, _recovery_rescan_needed
     with _index_recovery_lock:
-        if _index_recovery_state["status"] in ("running", "ready", "ready_with_warnings"):
+        if force:
+            _recovery_rescan_needed = True
+        elif _index_recovery_state["status"] in ("running", "ready", "ready_with_warnings"):
             return
         if _index_recovery_thread is not None and _index_recovery_thread.is_alive():
             return
@@ -193,6 +235,30 @@ def start_index_recovery_on_first_request():
     if (request.endpoint not in (None, "static", "upload_document", "admin_index_status", "retry_index_recovery")
             and _index_recovery_state["status"] == "not_started"):
         _start_index_recovery()
+
+
+@contextmanager
+def _request_watchdog(stage_name, timeout_seconds=45.0):
+    """Per-request watchdog that dumps thread tracebacks without clobbering concurrent requests."""
+    if timeout_seconds <= 0:
+        yield
+        return
+
+    def _dump():
+        app.logger.warning(
+            "[ASK] %s exceeded %.0fs; dumping active Python thread tracebacks",
+            stage_name,
+            timeout_seconds,
+        )
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+
+    timer = threading.Timer(timeout_seconds, _dump)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
 
 
 def peak_rss_mb():
@@ -252,11 +318,21 @@ def is_production():
     return flask_env == "production" or app_env == "production"
 
 
+def _has_module(module_name):
+    try:
+        __import__(module_name)
+        return True
+    except ImportError:
+        return False
+
+
 def normalize_database_url(url):
     if not url:
         return "sqlite:///internassist.db"
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql://", 1)
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://") and not _has_module("psycopg2") and _has_module("psycopg"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
 
@@ -284,7 +360,7 @@ def validate_production_config(application):
 # CORS configuration
 cors_origins_env = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173"
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 )
 cors_origins = [
     origin.strip()
@@ -448,17 +524,29 @@ def home():
         "message": "InternAssist API is running"
     })
 
+def _json_body():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _str_field(data, key, default=""):
+    value = data.get(key, default)
+    if value is None:
+        return default
+    return value if isinstance(value, str) else str(value)
+
+
 # Register
 
 @app.route("/api/auth/register", methods=["POST"])
 def register():
 
-    data = request.get_json()
+    data = _json_body()
 
-    name = data.get("name", "").strip()
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "")
-    role = data.get("role", "student")
+    name = _str_field(data, "name").strip()
+    email = _str_field(data, "email").strip().lower()
+    password = _str_field(data, "password")
+    role = _str_field(data, "role", "student").strip() or "student"
 
     if not name or not email or not password:
         return jsonify({
@@ -508,10 +596,10 @@ def register():
 @app.route("/api/auth/login", methods=["POST"])
 def login():
 
-    data = request.get_json()
+    data = _json_body()
 
-    email = data.get("email", "").strip().lower()
-    password = data.get("password", "")
+    email = _str_field(data, "email").strip().lower()
+    password = _str_field(data, "password")
 
     if not email or not password:
         return jsonify({
@@ -645,14 +733,6 @@ def upload_document():
         return jsonify({"error": "Authentication required."}), 401
     if user.role != "admin":
         return jsonify({"error": "Admin access required."}), 403
-    if not app.config.get("TESTING"):
-        if _index_recovery_state["status"] in ("not_started", "running"):
-            _start_index_recovery()
-            return jsonify({"status": "index_rebuilding",
-                            "message": "The document index is being restored. Retry the upload shortly."}), 503, {"Retry-After": "5"}
-        if _index_recovery_state["status"] == "failed":
-            return jsonify({"status": "index_recovery_failed",
-                            "error": "The document index needs administrator attention before uploads can continue."}), 503
     if "file" not in request.files:
         return jsonify({"error": "No file was provided."}), 400
 
@@ -662,8 +742,11 @@ def upload_document():
     if not allowed_file(uploaded.filename):
         return jsonify({"error": "File type not supported. Allowed types: PDF, DOCX, PPTX and TXT."}), 400
 
+    extension = get_file_extension(uploaded.filename)
     original_filename = secure_filename(uploaded.filename)
-    extension = get_file_extension(original_filename)
+    if not original_filename or "." not in original_filename:
+        base = original_filename if original_filename and original_filename != extension else "document"
+        original_filename = f"{base}.{extension}"
     # Read at most MAX_CONTENT_LENGTH + 1 to enforce the limit without an
     # unbounded read. Flask also enforces MAX_CONTENT_LENGTH at request level.
     content = uploaded.stream.read(app.config["MAX_CONTENT_LENGTH"] + 1)
@@ -695,9 +778,7 @@ def upload_document():
     # Schedule recovery/indexing after durable commit. A process restart is safe:
     # the pending document and original bytes remain in PostgreSQL.
     if not app.config.get("TESTING"):
-        with _index_recovery_lock:
-            _index_recovery_state.update(status="not_started", error=None)
-        _start_index_recovery()
+        _start_index_recovery(force=True)
     return jsonify({
         "message": "Document uploaded and saved. Indexing is running in the background.",
         "document": document.to_dict(),
@@ -1027,12 +1108,9 @@ def create_conversation():
             "error": "Authentication required."
         }), 401
 
-    data = request.get_json() or {}
+    data = _json_body()
 
-    title = data.get(
-        "title",
-        "New Conversation"
-    ).strip()
+    title = _str_field(data, "title", "New Conversation").strip()
 
     if not title:
         title = "New Conversation"
@@ -1123,10 +1201,10 @@ def add_message(conversation_id):
             "error": "Conversation not found."
         }), 404
 
-    data = request.get_json() or {}
+    data = _json_body()
 
-    role = data.get("role", "").strip()
-    content = data.get("content", "").strip()
+    role = _str_field(data, "role").strip()
+    content = _str_field(data, "content").strip()
 
     if role not in ["user", "assistant"]:
         return jsonify({
@@ -1145,7 +1223,7 @@ def add_message(conversation_id):
 
     db.session.add(message)
 
-    conversation.updated_at = datetime.now(timezone.utc)
+    conversation.updated_at = utcnow_naive()
 
     db.session.commit()
 
@@ -1278,6 +1356,43 @@ def get_admin_conversations():
 
 # Ask assistant (RAG + Gemini)
 
+def _coerce_doc_id(doc_id):
+    if isinstance(doc_id, int) and not isinstance(doc_id, bool):
+        return doc_id
+    if isinstance(doc_id, str) and doc_id.strip().isdigit():
+        return int(doc_id.strip())
+    return None
+
+
+_FOLLOWUP_MARKERS = {
+    "it", "its", "this", "that", "these", "those",
+    "they", "them", "their", "same", "above", "previous",
+    "more", "else", "again",
+}
+
+_IGNORED_ASSISTANT_HISTORY = {
+    "gemini is temporarily unavailable. please try again.",
+    "i'm sorry, i was unable to retrieve an answer at this time. please try again.",
+    "i don't have any relevant documents to answer this question yet.",
+}
+
+
+def _build_retrieval_query(question, history):
+    """Expand short or referential follow-up queries using the previous user question."""
+    if not history:
+        return question
+    words = [w.strip(".,?!:;\"'()[]{}").lower() for w in question.split()]
+    has_reference = any(word in _FOLLOWUP_MARKERS for word in words)
+    if len(words) > 7 and not (len(words) <= 16 and has_reference):
+        return question
+    for item in reversed(history):
+        if item.get("role") == "user" and item.get("content"):
+            prev = item["content"].strip()
+            if prev and prev.lower() != question.strip().lower():
+                return f"{prev} {question}"
+    return question
+
+
 @app.route("/api/ask", methods=["POST"])
 def ask():
     request_started = time.perf_counter()
@@ -1290,22 +1405,49 @@ def ask():
         }), 401
 
     if not app.config.get("TESTING"):
-        if _index_recovery_state["status"] in ("not_started", "running"):
+        with _index_recovery_lock:
+            recovery_status = _index_recovery_state["status"]
+            initial_done = _initial_recovery_done
+        if not initial_done and recovery_status in ("not_started", "running"):
             _start_index_recovery()
             return jsonify({"status": "index_rebuilding",
                             "message": "The document index is being restored. Please retry shortly."}), 503, {"Retry-After": "5"}
-        if _index_recovery_state["status"] == "failed":
+        if not initial_done and recovery_status == "failed":
             return jsonify({"status": "index_recovery_failed",
                             "error": "The document index could not be fully restored. Please contact an administrator."}), 503
 
-    data = request.get_json() or {}
-    question = data.get("question", "").strip()
+    data = _json_body()
+    question = _str_field(data, "question").strip()
 
     if not question:
         return jsonify({
             "error": "Question is required."
         }), 400
 
+    history = []
+    conv_id_raw = data.get("conversation_id")
+    if conv_id_raw is not None:
+        conv_id = _coerce_doc_id(conv_id_raw)
+        if conv_id is not None:
+            conversation = Conversation.query.filter_by(
+                id=conv_id,
+                user_id=user.id
+            ).first()
+            if conversation:
+                msgs = [
+                    {"role": m.role, "content": m.content}
+                    for m in conversation.messages
+                    if not (
+                        m.role == "assistant"
+                        and (m.content or "").strip().lower() in _IGNORED_ASSISTANT_HISTORY
+                    )
+                ]
+                # Exclude the just-saved copy of this same user question if present at the tail.
+                if msgs and msgs[-1]["role"] == "user" and msgs[-1]["content"].strip() == question:
+                    msgs = msgs[:-1]
+                history = msgs[-6:]
+
+    retrieval_query = _build_retrieval_query(question, history)
 
     # 1. Vector retrieval
     app.logger.info(
@@ -1314,22 +1456,18 @@ def ask():
     )
     retrieval_started = time.perf_counter()
 
-    # Diagnostic: if retrieval is still running after 45s, dump every
-    # thread's Python stack to stderr so the logs show exactly where it is stuck.
-    faulthandler.dump_traceback_later(45, exit=False)
     retrieval_error = None
-    try:
-        retrieved_chunks = search(question)
-    except VectorStoreUnavailable as exc:
-        app.logger.exception("[ASK] Vector search unavailable")
-        retrieved_chunks = []
-        retrieval_error = exc
-    except Exception as exc:
-        app.logger.exception("[ASK] Unexpected vector search failure")
-        retrieved_chunks = []
-        retrieval_error = exc
-    finally:
-        faulthandler.cancel_dump_traceback_later()
+    with _request_watchdog("Vector retrieval", timeout_seconds=45.0):
+        try:
+            retrieved_chunks = search(retrieval_query)
+        except VectorStoreUnavailable as exc:
+            app.logger.warning("[ASK] Vector search unavailable: %s", type(exc).__name__)
+            retrieved_chunks = []
+            retrieval_error = exc
+        except Exception as exc:
+            app.logger.exception("[ASK] Unexpected vector search failure")
+            retrieved_chunks = []
+            retrieval_error = exc
 
     app.logger.info(
         "[ASK] Vector retrieval completed in %.2fs (%d chunks, peak RSS %.0f MB)",
@@ -1354,37 +1492,46 @@ def ask():
             "status": "no_relevant_chunks"
         }), 200
 
-    context = "\n\n".join(
-        chunk["text"] for chunk in retrieved_chunks
-    )
-
-    # 2. PostgreSQL citation lookup
+    # 2. PostgreSQL citation lookup (done before prompt assembly so context carries source headers)
     citation_started = time.perf_counter()
 
     citations = []
     seen_citations = set()
+    doc_names = {}
+    context_blocks = []
 
     for chunk in retrieved_chunks:
         doc_id = chunk.get("document_id")
         page_num = chunk.get("page_number")
         citation_key = (doc_id, page_num)
 
+        if doc_id not in doc_names:
+            coerced_id = _coerce_doc_id(doc_id)
+            document = None
+            if coerced_id is not None:
+                try:
+                    document = db.session.get(Document, coerced_id)
+                except Exception:
+                    db.session.rollback()
+                    app.logger.exception("[ASK] Citation lookup failed")
+                    document = None
+            doc_names[doc_id] = document.filename if document else "Unknown document"
+
+        doc_name = doc_names[doc_id]
+        source_label = f"{doc_name}, Page {page_num}" if page_num else doc_name
+        context_blocks.append(f"[Source: {source_label}]\n{chunk['text']}")
+
         if citation_key in seen_citations:
             continue
 
         seen_citations.add(citation_key)
-
-        try:
-            document = db.session.get(Document, doc_id) if doc_id else None
-        except Exception:
-            app.logger.exception("[ASK] Citation lookup failed")
-            document = None
-
         citations.append({
             "document_id": doc_id,
-            "document_name": document.filename if document else "Unknown document",
+            "document_name": doc_name,
             "page_number": page_num
         })
+
+    context = "\n\n".join(context_blocks)
 
     app.logger.info(
         "[ASK] Citation lookup completed in %.2fs (%d citations)",
@@ -1395,17 +1542,22 @@ def ask():
     # 3. Gemini generation
     gemini_started = time.perf_counter()
 
-    faulthandler.dump_traceback_later(45, exit=False)
-    try:
-        answer = ask_gemini(
-            context=context,
-            question=question
-        )
-    except Exception:
-        app.logger.exception("[ASK] Gemini generation failed")
-        answer = "Gemini is temporarily unavailable. Please try again."
-    finally:
-        faulthandler.cancel_dump_traceback_later()
+    with _request_watchdog("Gemini generation", timeout_seconds=45.0):
+        try:
+            if history:
+                answer = ask_gemini(
+                    context=context,
+                    question=question,
+                    history=history,
+                )
+            else:
+                answer = ask_gemini(
+                    context=context,
+                    question=question,
+                )
+        except Exception:
+            app.logger.exception("[ASK] Gemini generation failed")
+            answer = "Gemini is temporarily unavailable. Please try again."
 
     app.logger.info(
         "[ASK] Gemini generation completed in %.2fs",

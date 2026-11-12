@@ -5,14 +5,25 @@ import random
 import time
 from typing import Callable, Optional, TypeVar
 
+try:
+    import httpx as _httpx
+except ImportError:  # pragma: no cover - httpx is a google-genai dependency
+    _httpx = None
+
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
-DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_FALLBACK_MODEL = "gemini-3.6-flash"
 MAX_ATTEMPTS_PER_MODEL = 2
 BASE_DELAY_SECONDS = 1.0
-TRANSIENT_CODES = {408, 429, 503, 504}
-TRANSIENT_STATUSES = {"RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED"}
+TRANSIENT_CODES = {408, 429, 500, 502, 503, 504}
+TRANSIENT_STATUSES = {
+    "RESOURCE_EXHAUSTED",
+    "UNAVAILABLE",
+    "DEADLINE_EXCEEDED",
+    "INTERNAL",
+    "BAD_GATEWAY",
+}
 
 
 class GenerationError(Exception):
@@ -36,7 +47,14 @@ def _code_and_status(exc: BaseException):
 
 
 def is_transient(exc: BaseException) -> bool:
-    if isinstance(exc, TimeoutError):
+    if getattr(exc, "is_transient", False):
+        return True
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    if _httpx is not None and isinstance(
+        exc,
+        (_httpx.TimeoutException, _httpx.NetworkError, _httpx.RemoteProtocolError),
+    ):
         return True
     if any("timeout" in cls.__name__.lower() for cls in type(exc).__mro__):
         return True

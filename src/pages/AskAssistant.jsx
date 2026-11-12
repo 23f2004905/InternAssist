@@ -1,20 +1,48 @@
-
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl, parseJsonResponse } from "../utils/api";
 import "./AskAssistant.css";
 
-const API_URL = import.meta.env.VITE_API_URL || String.fromCharCode(104,116,116,112,58,47,47,108,111,99,97,108,104,111,115,116,58,53,48,48,49)
+const API_URL = getApiBaseUrl();
+
+const MARKDOWN_COMPONENTS = {
+  h1: ({ children }) => <h2>{children}</h2>,
+  h2: ({ children }) => <h3>{children}</h3>,
+  ul: ({ children }) => (
+    <ul style={{ paddingLeft: "24px" }}>{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol style={{ paddingLeft: "24px" }}>{children}</ol>
+  ),
+  li: ({ children }) => (
+    <li style={{ marginBottom: "6px" }}>{children}</li>
+  ),
+  p: ({ children }) => (
+    <p style={{ margin: "10px 0" }}>{children}</p>
+  ),
+};
+
 export default function AskAssistant() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
-  const [answer, setAnswer] = useState("");
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [messages, setMessages] = useState([]);
   const [error, setError] = useState("");
-  const [conversationId, setConversationId] = useState(null);
-  const [citations, setCitations] = useState([]);
+  const [conversationId, setConversationId] = useState(() => {
+    const raw = searchParams.get("conversationId");
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  });
 
-  async function saveMessage(id, role, content) {
+  const initialQuestionHandledRef = useRef(false);
+
+  const saveMessage = useCallback(async (id, role, content) => {
     const response = await fetch(
       `${API_URL}/api/conversations/${id}/messages`,
       {
@@ -25,119 +53,206 @@ export default function AskAssistant() {
       }
     );
 
-    const data = await response.json();
+    return parseJsonResponse(response, "Unable to save message.");
+  }, []);
 
-    if (!response.ok) {
-      throw new Error(data.error || "Unable to save message.");
-    }
+  const submitQuestion = useCallback(
+    async (rawQuestion) => {
+      const value = rawQuestion.trim();
+      if (!value || loading) return;
 
-    return data;
-  }
+      setLoading(true);
+      setError("");
 
-  async function handleSubmit(event) {
-    event.preventDefault();
+      const tempUserId = `temp-user-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: tempUserId, role: "user", content: value, citations: [] },
+      ]);
 
-    const value = question.trim();
+      try {
+        let activeConversationId = conversationId;
 
-    if (!value || loading) return;
-
-    setLoading(true);
-    setError("");
-    setAnswer("");
-    setCitations([]);
-
-    try {
-      let activeConversationId = conversationId;
-
-      // Create a conversation for the first question.
-      if (!activeConversationId) {
-        const createResponse = await fetch(
-          `${API_URL}/api/conversations`,
-          {
+        if (!activeConversationId) {
+          const createResponse = await fetch(`${API_URL}/api/conversations`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
             body: JSON.stringify({
               title: value.slice(0, 60),
             }),
+          });
+
+          const createData = await parseJsonResponse(
+            createResponse,
+            "Could not create conversation."
+          );
+
+          activeConversationId = createData.conversation.id;
+          setConversationId(activeConversationId);
+        }
+
+        await saveMessage(activeConversationId, "user", value);
+
+        let assistantAnswer = "";
+        let retrievedCitations = [];
+        let askErrorOccurred = false;
+
+        try {
+          const response = await fetch(`${API_URL}/api/ask`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              question: value,
+              conversation_id: activeConversationId,
+            }),
+          });
+
+          const data = await parseJsonResponse(
+            response,
+            "Assistant request failed."
+          );
+
+          assistantAnswer =
+            data.answer ||
+            "I don't have any relevant documents to answer this question yet.";
+          retrievedCitations = Array.isArray(data.citations)
+            ? data.citations
+            : [];
+
+          if (
+            assistantAnswer.trim() ===
+            "Gemini is temporarily unavailable. Please try again."
+          ) {
+            askErrorOccurred = true;
+            setError(assistantAnswer);
           }
-        );
-
-        const createData = await createResponse.json();
-
-        if (!createResponse.ok) {
-          throw new Error(
-            createData.error || "Could not create conversation."
-          );
+        } catch (askErr) {
+          askErrorOccurred = true;
+          assistantAnswer =
+            askErr.message ||
+            "I'm sorry, I was unable to retrieve an answer at this time. Please try again.";
+          setError(assistantAnswer);
         }
 
-        activeConversationId = createData.conversation.id;
-        setConversationId(activeConversationId);
+        if (assistantAnswer) {
+          if (!askErrorOccurred) {
+            try {
+              await saveMessage(
+                activeConversationId,
+                "assistant",
+                assistantAnswer
+              );
+            } catch (saveErr) {
+              console.error("Failed to save assistant message:", saveErr);
+            }
+          }
+
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `assistant-${Date.now()}`,
+              role: "assistant",
+              content: assistantAnswer,
+              citations: retrievedCitations,
+              isError: askErrorOccurred,
+            },
+          ]);
+        }
+
+        if (!askErrorOccurred) {
+          setQuestion("");
+        }
+      } catch (err) {
+        setError(err.message || "Unable to connect to the server.");
+      } finally {
+        setLoading(false);
       }
+    },
+    [conversationId, loading, saveMessage]
+  );
 
-      // Save the student's question.
-      await saveMessage(activeConversationId, "user", value);
+  // Load an existing conversation when opened with ?conversationId=...
+  useEffect(() => {
+    const paramId = searchParams.get("conversationId");
+    const parsedId = paramId ? Number(paramId) : NaN;
+    if (!Number.isInteger(parsedId) || parsedId <= 0) return;
 
-      // Get the RAG/Gemini answer.
-      let assistantAnswer = "";
-      let retrievedCitations = [];
-      let askErrorOccurred = false;
-
+    let cancelled = false;
+    async function loadExistingConversation() {
       try {
-        const response = await fetch(`${API_URL}/api/ask`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ question: value }),
-        });
-
-        let data;
-        try {
-          data = await response.json();
-        } catch {
-          throw new Error("The server returned an invalid response. Please try again.");
-        }
-
-        if (!response.ok) {
-          throw new Error(data.error || "Assistant request failed.");
-        }
-
-        assistantAnswer = data.answer || "I don't have any relevant documents to answer this question yet.";
-        retrievedCitations = data.citations || [];
-      } catch (askErr) {
-        askErrorOccurred = true;
-        assistantAnswer = "I'm sorry, I was unable to retrieve an answer at this time. Please try again.";
-        setAnswer(assistantAnswer);
-        setError(askErr.message || "Unable to connect to the assistant.");
-      }
-
-      // Save the assistant's answer so conversation history is never left without an AI response.
-      if (assistantAnswer) {
-        try {
-          await saveMessage(
-            activeConversationId,
-            "assistant",
-            assistantAnswer
+        setLoadingHistory(true);
+        setError("");
+        const response = await fetch(
+          `${API_URL}/api/conversations/${parsedId}`,
+          { credentials: "include" }
+        );
+        const data = await parseJsonResponse(
+          response,
+          "Unable to load conversation."
+        );
+        if (!cancelled) {
+          setConversationId(parsedId);
+          setMessages(
+            (data.messages || []).map((msg) => ({
+              id: msg.id,
+              role: msg.role,
+              content: msg.content,
+              citations: [],
+            }))
           );
-        } catch (saveErr) {
-          console.error("Failed to save assistant message:", saveErr);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || "Unable to load conversation.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingHistory(false);
         }
       }
-
-      if (!askErrorOccurred) {
-        setAnswer(assistantAnswer);
-        setCitations(retrievedCitations);
-        setQuestion("");
-      }
-    } catch (err) {
-      setError(err.message || "Unable to connect to the server.");
-    } finally {
-      setLoading(false);
     }
+
+    loadExistingConversation();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
+
+  // Accept question passed via router state from StudentDashboard / FacultyDashboard
+  useEffect(() => {
+    const incomingQuestion = location.state?.question;
+    if (
+      typeof incomingQuestion === "string" &&
+      incomingQuestion.trim() &&
+      !initialQuestionHandledRef.current
+    ) {
+      initialQuestionHandledRef.current = true;
+      const trimmed = incomingQuestion.trim();
+      setQuestion(trimmed);
+      navigate(location.pathname + location.search, { replace: true, state: {} });
+      submitQuestion(trimmed);
+    }
+  }, [location, navigate, submitQuestion]);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    await submitQuestion(question);
   }
 
-  function useSuggestion(text) {
+  function applySuggestion(text) {
     setQuestion(text);
+  }
+
+  function startNewConversation() {
+    setConversationId(null);
+    setMessages([]);
+    setError("");
+    setQuestion("");
+    if (searchParams.has("conversationId")) {
+      setSearchParams({}, { replace: true });
+    }
   }
 
   return (
@@ -146,12 +261,26 @@ export default function AskAssistant() {
 
       <main className="ask-main">
         <section className="ask-header">
-          <p className="ask-eyebrow">INTERNASSIST</p>
-          <h1>Ask Assistant</h1>
-          <p className="ask-description">
-            Ask questions about internships, academic requirements
-            and institutional policies.
-          </p>
+          <div className="ask-header-row">
+            <div>
+              <p className="ask-eyebrow">INTERNASSIST</p>
+              <h1>Ask Assistant</h1>
+              <p className="ask-description">
+                Ask questions about internships, academic requirements
+                and institutional policies.
+              </p>
+            </div>
+            {(conversationId || messages.length > 0) && (
+              <button
+                type="button"
+                className="new-chat-button"
+                onClick={startNewConversation}
+                disabled={loading}
+              >
+                + New conversation
+              </button>
+            )}
+          </div>
         </section>
 
         <section className="assistant-panel">
@@ -167,6 +296,12 @@ export default function AskAssistant() {
             <textarea
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  submitQuestion(question);
+                }
+              }}
               placeholder="For example: What documents are required to apply for an internship?"
               rows="5"
               disabled={loading}
@@ -187,90 +322,69 @@ export default function AskAssistant() {
           </form>
 
           {error && (
-            <p style={{ color: "#d33", marginTop: "12px" }}>
+            <p className="ask-error-banner" role="alert">
               {error}
             </p>
           )}
 
-          {answer && (
-            <div
-              style={{
-                marginTop: "20px",
-                padding: "22px",
-                background: "#f4f5f7",
-                borderRadius: "10px",
-                color: "#243247",
-                lineHeight: 1.7,
-              }}
-            >
-              <strong style={{ fontSize: "18px" }}>Answer</strong>
+          {loadingHistory && (
+            <p className="ask-loading-history">
+              Loading conversation history...
+            </p>
+          )}
 
-              <div className="markdown-answer">
-                <ReactMarkdown
-                  components={{
-                    h1: ({ children }) => <h2>{children}</h2>,
-                    h2: ({ children }) => <h3>{children}</h3>,
-                    ul: ({ children }) => (
-                      <ul style={{ paddingLeft: "24px" }}>
-                        {children}
+          {messages.length > 0 && (
+            <div className="assistant-thread">
+              {messages.map((msg) => (
+                <article
+                  key={msg.id}
+                  className={`thread-message ${
+                    msg.role === "user" ? "thread-user" : "thread-assistant"
+                  }`}
+                >
+                  <strong className="thread-role">
+                    {msg.role === "user" ? "You" : "Answer"}
+                  </strong>
+
+                  {msg.role === "user" ? (
+                    <p className="thread-user-text">{msg.content}</p>
+                  ) : (
+                    <div className="markdown-answer">
+                      <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+
+                  {Array.isArray(msg.citations) && msg.citations.length > 0 && (
+                    <div className="thread-citations">
+                      <strong>Sources</strong>
+                      <ul>
+                        {msg.citations.map((citation, index) => (
+                          <li key={`${citation.document_id}-${index}`}>
+                            {citation.document_name}
+                            {citation.page_number
+                              ? ` — Page ${citation.page_number}`
+                              : ""}
+                          </li>
+                        ))}
                       </ul>
-                    ),
-                    ol: ({ children }) => (
-                      <ol style={{ paddingLeft: "24px" }}>
-                        {children}
-                      </ol>
-                    ),
-                    li: ({ children }) => (
-                      <li style={{ marginBottom: "6px" }}>
-                        {children}
-                      </li>
-                    ),
-                    p: ({ children }) => (
-                      <p style={{ margin: "10px 0" }}>
-                        {children}
-                      </p>
-                    ),
-                  }}
-                >
-                  {answer}
-                </ReactMarkdown>
-              </div>
+                    </div>
+                  )}
+                </article>
+              ))}
 
-              {citations.length > 0 && (
-                <div
-                  style={{
-                    marginTop: "20px",
-                    paddingTop: "14px",
-                    borderTop: "1px solid #d7dce3",
-                  }}
-                >
-                  <strong>Sources</strong>
-
-                  <ul style={{ paddingLeft: "20px" }}>
-                    {citations.map((citation, index) => (
-                      <li key={`${citation.document_id}-${index}`}>
-                        {citation.document_name}
-                        {citation.page_number
-                          ? ` — Page ${citation.page_number}`
-                          : ""}
-                      </li>
-                    ))}
-                  </ul>
+              {loading && (
+                <div className="thread-message thread-assistant thread-thinking">
+                  <strong className="thread-role">Answer</strong>
+                  <p>Searching documents and generating response...</p>
                 </div>
               )}
 
               {conversationId && (
                 <Link
                   to={`/conversations/${conversationId}`}
-                  style={{
-                    display: "inline-block",
-                    marginTop: "14px",
-                    padding: "10px 16px",
-                    background: "#173653",
-                    color: "#ffffff",
-                    borderRadius: "6px",
-                    textDecoration: "none",
-                  }}
+                  className="view-conversation-link"
                 >
                   View conversation history →
                 </Link>
@@ -289,7 +403,7 @@ export default function AskAssistant() {
             <button
               type="button"
               onClick={() =>
-                useSuggestion(
+                applySuggestion(
                   "What documents are required for an internship?"
                 )
               }
@@ -304,7 +418,7 @@ export default function AskAssistant() {
             <button
               type="button"
               onClick={() =>
-                useSuggestion(
+                applySuggestion(
                   "What are the internship approval requirements?"
                 )
               }
@@ -319,7 +433,7 @@ export default function AskAssistant() {
             <button
               type="button"
               onClick={() =>
-                useSuggestion("How is the internship evaluated?")
+                applySuggestion("How is the internship evaluated?")
               }
             >
               <span>03</span>
@@ -346,7 +460,7 @@ export default function AskAssistant() {
         <button
           className="back-to-dashboard"
           type="button"
-          onClick={() => window.location.assign("/dashboard")}
+          onClick={() => navigate("/dashboard")}
         >
           ← Back to dashboard
         </button>

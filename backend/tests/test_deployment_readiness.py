@@ -312,7 +312,7 @@ def test_gemini_request_timeout_is_capped(monkeypatch):
 def test_gemini_default_model_configuration(monkeypatch):
     """Gemini model name should default to a valid model and allow env override."""
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert DEFAULT_GEMINI_MODEL == "gemini-3.8-flash"
+    assert DEFAULT_GEMINI_MODEL == "gemini-3.5-flash-lite"
 
 def test_redis_client_configuration_from_url(monkeypatch):
     """build_redis_client should support REDIS_URL environment variable."""

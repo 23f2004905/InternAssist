@@ -1,9 +1,11 @@
-
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl, parseJsonResponse } from "../utils/api";
 
-const API_URL = import.meta.env.VITE_API_URL || String.fromCharCode(104,116,116,112,58,47,47,108,111,99,97,108,104,111,115,116,58,53,48,48,49)
+const API_URL = getApiBaseUrl();
+
 export default function ConversationDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -29,13 +31,10 @@ export default function ConversationDetail() {
           }
         );
 
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(
-            data.error || "Unable to load conversation."
-          );
-        }
+        const data = await parseJsonResponse(
+          response,
+          "Unable to load conversation."
+        );
 
         if (!cancelled) {
           setConversation(data.conversation);
@@ -72,12 +71,32 @@ export default function ConversationDetail() {
           padding: "20px",
         }}
       >
-        <button
-          type="button"
-          onClick={() => navigate("/conversations")}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
         >
-          ← Back to conversations
-        </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => navigate("/conversations")}
+          >
+            ← Back to conversations
+          </button>
+
+          {conversation && (
+            <Link
+              to={`/assistant?conversationId=${conversation.id}`}
+              className="btn-primary"
+            >
+              Continue conversation →
+            </Link>
+          )}
+        </div>
 
         {loading && (
           <p style={{ marginTop: "24px" }}>
@@ -131,15 +150,21 @@ export default function ConversationDetail() {
                         : "InternAssist Assistant"}
                     </strong>
 
-                    <p
-                      style={{
-                        marginTop: "10px",
-                        whiteSpace: "pre-wrap",
-                        lineHeight: "1.6",
-                      }}
-                    >
-                      {message.content}
-                    </p>
+                    {message.role === "user" ? (
+                      <p
+                        style={{
+                          marginTop: "10px",
+                          whiteSpace: "pre-wrap",
+                          lineHeight: "1.6",
+                        }}
+                      >
+                        {message.content}
+                      </p>
+                    ) : (
+                      <div style={{ marginTop: "10px", lineHeight: "1.6" }}>
+                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      </div>
+                    )}
 
                     {message.created_at && (
                       <small style={{ color: "#888" }}>

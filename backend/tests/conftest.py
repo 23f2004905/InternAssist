@@ -38,6 +38,7 @@ def test_database():
 @pytest.fixture
 def client(test_database):
     with app.app_context():
+        db.session.remove()
         db.drop_all()
         db.create_all()
 

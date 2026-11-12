@@ -4,11 +4,11 @@ import {
   useEffect,
   useState,
 } from "react";
+import { getApiBaseUrl } from "../utils/api";
 
 const AuthContext = createContext(null);
 
-
-const API_URL = `${import.meta.env.VITE_API_URL || String.fromCharCode(104,116,116,112,58,47,47,108,111,99,97,108,104,111,115,116,58,53,48,48,49)}/api`
+const API_URL = `${getApiBaseUrl()}/api`;
 export function AuthProvider({ children }) {
 
   const [currentUser, setCurrentUser] = useState(null);

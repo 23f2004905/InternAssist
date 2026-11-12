@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl } from "../utils/api";
 import "./Users.css";
 
-const API_URL = import.meta.env.VITE_API_URL || String.fromCharCode(104,116,116,112,58,47,47,108,111,99,97,108,104,111,115,116,58,53,48,48,49)
+const API_URL = getApiBaseUrl();
 export default function Users() {
 
   const [users, setUsers] = useState([]);

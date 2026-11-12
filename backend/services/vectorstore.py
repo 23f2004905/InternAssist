@@ -40,21 +40,37 @@ def _embed_texts(texts, task_type):
         return []
 
     from google.genai import types
-    from services.llm import get_gemini_client
+    from services.gemini_retry import GenerationError, generate_with_fallback
+    from services.llm import describe_gemini_error, get_gemini_client
 
     gemini_client = get_gemini_client()
 
     if not gemini_client:
         raise VectorStoreUnavailable("Gemini embedding service is unavailable")
 
-    response = gemini_client.models.embed_content(
-        model=EMBEDDING_MODEL,
-        contents=texts,
-        config=types.EmbedContentConfig(
-            task_type=task_type,
-            output_dimensionality=EMBEDDING_DIMENSIONS,
-        ),
-    )
+    try:
+        response = generate_with_fallback(
+            lambda selected_model: gemini_client.models.embed_content(
+                model=selected_model,
+                contents=texts,
+                config=types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=EMBEDDING_DIMENSIONS,
+                ),
+            ),
+            primary_model=EMBEDDING_MODEL,
+            fallback_model="",
+            sleep=time.sleep,
+            error_formatter=describe_gemini_error,
+        )
+    except GenerationError as exc:
+        raise VectorStoreUnavailable("Gemini embedding service is unavailable") from exc
+    except Exception as exc:
+        logger.warning(
+            "[VECTOR] Unexpected embedding error: %s",
+            describe_gemini_error(exc),
+        )
+        raise VectorStoreUnavailable("Gemini embedding service is unavailable") from exc
 
     embeddings = getattr(response, "embeddings", None)
 
@@ -191,6 +207,8 @@ def search(query, n_results=8):
         retrieved_chunks = []
 
         for text, metadata, distance in zip(documents, metadatas, distances):
+            if not text or not str(text).strip():
+                continue
             metadata = metadata or {}
 
             retrieved_chunks.append(
@@ -204,8 +222,12 @@ def search(query, n_results=8):
 
         return retrieved_chunks
 
+    except VectorStoreUnavailable:
+        raise
     except Exception as exc:
-        logger.exception("Vector search failed")
+        from services.llm import describe_gemini_error
+
+        logger.error("Vector search failed: %s", describe_gemini_error(exc))
         raise VectorStoreUnavailable(
             "Vector retrieval is temporarily unavailable"
         ) from exc

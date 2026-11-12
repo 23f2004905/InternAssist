@@ -77,11 +77,12 @@ def save_chat_history(conversation_id, messages):
     Returns True if successfully stored, False otherwise.
     """
     key = f"chat:{conversation_id}"
+    ttl = int(os.getenv("REDIS_CHAT_TTL", str(REDIS_CHAT_TTL)))
     try:
         redis_client.set(
             key,
             json.dumps(messages),
-            ex=REDIS_CHAT_TTL
+            ex=ttl
         )
         return True
     except (redis.RedisError, OSError, Exception) as exc:
