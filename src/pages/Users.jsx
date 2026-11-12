@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl } from "../utils/api";
 import "./Users.css";
 
-const API_URL = "http://localhost:5001";
-
+const API_URL = getApiBaseUrl();
 export default function Users() {
 
   const [users, setUsers] = useState([]);

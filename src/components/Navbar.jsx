@@ -31,6 +31,7 @@ export default function Navbar() {
   if (role === "admin") {
     links = [
       { label: "Dashboard", path: "/dashboard" },
+      { label: "Ask Assistant", path: "/assistant" },
       { label: "Documents", path: "/documents" },
       { label: "Users", path: "/users" },
       { label: "Conversations", path: "/conversations" },

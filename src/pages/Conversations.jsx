@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl, parseJsonResponse } from "../utils/api";
 import "./Conversations.css";
 
-const API_URL = "http://localhost:5001";
-
+const API_URL = getApiBaseUrl();
 export default function Conversations() {
 
   const navigate = useNavigate();
@@ -32,14 +32,10 @@ export default function Conversations() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          "Unable to load conversations."
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        "Unable to load conversations."
+      );
 
       setConversations(
         data.conversations || []
@@ -87,14 +83,10 @@ export default function Conversations() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          "Unable to create conversation."
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        "Unable to create conversation."
+      );
 
       navigate(
         `/conversations/${data.conversation.id}`
@@ -134,14 +126,10 @@ export default function Conversations() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          "Unable to delete conversation."
-        );
-      }
+      await parseJsonResponse(
+        response,
+        "Unable to delete conversation."
+      );
 
       await loadConversations();
 

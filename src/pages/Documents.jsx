@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import Navbar from "../components/Navbar";
+import { getApiBaseUrl, parseJsonResponse } from "../utils/api";
 import "./Documents.css";
 
-const API_URL = "http://localhost:5001";
-
+const API_URL = getApiBaseUrl();
 export default function Documents() {
   const { currentUser } = useAuth();
+  const fileInputRef = useRef(null);
 
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,9 +29,11 @@ export default function Documents() {
   // Load documents
   // --------------------------------
 
-  async function loadDocuments() {
+  const loadDocuments = useCallback(async ({ silent = false } = {}) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       setError("");
 
       const response = await fetch(
@@ -40,27 +43,44 @@ export default function Documents() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to load documents."
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        "Unable to load documents."
+      );
 
       setDocuments(data.documents || []);
 
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
-  }
+  }, []);
 
 
   useEffect(() => {
     loadDocuments();
-  }, []);
+  }, [loadDocuments]);
+
+  // Poll briefly while any uploaded document is still indexing in the background
+  useEffect(() => {
+    const hasPending = documents.some((doc) => doc.status === "pending");
+    if (!hasPending) return;
+
+    let attempts = 0;
+    const intervalId = setInterval(() => {
+      attempts += 1;
+      if (attempts > 15) {
+        clearInterval(intervalId);
+        return;
+      }
+      loadDocuments({ silent: true });
+    }, 2000);
+
+    return () => clearInterval(intervalId);
+  }, [documents, loadDocuments]);
 
 
   // --------------------------------
@@ -102,25 +122,23 @@ export default function Documents() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Upload failed."
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        "Upload failed."
+      );
 
       setMessage(
-        "Document uploaded successfully."
+        data.indexing_pending
+          ? "Document stored safely. Indexing is running in the background..."
+          : "Document uploaded and indexed successfully."
       );
 
       setTitle("");
       setFile(null);
 
-      // Reset file input
-      document.getElementById(
-        "document-file"
-      ).value = "";
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
 
       setShowUpload(false);
 
@@ -379,6 +397,7 @@ export default function Documents() {
                 </label>
 
                 <input
+                  ref={fileInputRef}
                   id="document-file"
                   type="file"
                   accept=".pdf,.docx,.pptx,.txt"

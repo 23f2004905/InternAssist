@@ -1,7 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from database import db
+
+
+def utcnow_naive():
+    """Return current UTC timestamp without tzinfo for SQLite/PostgreSQL parity."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class User(db.Model):
@@ -29,7 +34,7 @@ class User(db.Model):
     
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=utcnow_naive
     )
 
     def set_password(self, password):
@@ -77,13 +82,13 @@ class Conversation(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=utcnow_naive
     )
 
     updated_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+        default=utcnow_naive,
+        onupdate=utcnow_naive
     )
 
     user = db.relationship(
@@ -97,6 +102,7 @@ class Conversation(db.Model):
     messages = db.relationship(
         "Message",
         backref="conversation",
+        order_by="Message.id.asc()",
         lazy=True,
         cascade="all, delete-orphan"
     )
@@ -149,7 +155,7 @@ class Message(db.Model):
 
     created_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=utcnow_naive
     )
 
     def to_dict(self):
@@ -215,7 +221,7 @@ class Document(db.Model):
 
     uploaded_at = db.Column(
         db.DateTime,
-        default=datetime.utcnow
+        default=utcnow_naive
     )
 
     uploaded_by = db.relationship(
@@ -236,3 +242,19 @@ class Document(db.Model):
             "uploaded_at": self.uploaded_at.isoformat()
             if self.uploaded_at else None
         }
+
+class DocumentFile(db.Model):
+    """Durable original document bytes; Render's local disk is only a cache."""
+    __tablename__ = "document_files"
+
+    document_id = db.Column(
+        db.Integer, db.ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    content = db.Column(db.LargeBinary, nullable=False)
+    sha256 = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime, default=utcnow_naive, nullable=False)
+
+    document = db.relationship(
+        "Document", backref=db.backref("file_blob", uselist=False, cascade="all, delete-orphan")
+    )
