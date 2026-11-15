@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
 import "./Users.css";
-import { API_BASE_URL } from "../lib/api";
+import { apiRequest } from "../lib/api";
 
 
 export default function Users() {
@@ -23,20 +23,7 @@ export default function Users() {
       setLoading(true);
       setError("");
 
-      const response = await fetch(
-        `${API_BASE_URL}/admin/users`,
-        {
-          credentials: "include"
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to load users."
-        );
-      }
+      const data = await apiRequest("/admin/users");
 
       setUsers(data.users || []);
 
@@ -80,22 +67,7 @@ export default function Users() {
 
     try {
 
-      const response = await fetch(
-        `${API_BASE_URL}/admin/users/${user.id}/${action}`,
-        {
-          method: "POST",
-          credentials: "include"
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          `Unable to ${action} user.`
-        );
-      }
+      const data = await apiRequest(`/admin/users/${user.id}/${action}`, { method: "POST" });
 
       setMessage(
         data.message

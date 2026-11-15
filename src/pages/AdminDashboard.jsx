@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import "./Dashboard.css";
-import { API_BASE_URL } from "../lib/api";
+import { apiRequest } from "../lib/api";
 
 
 export default function AdminDashboard() {
@@ -30,21 +30,7 @@ export default function AdminDashboard() {
       setLoading(true);
       setError("");
 
-      const response = await fetch(
-        `${API_BASE_URL}/admin/stats`,
-        {
-          credentials: "include"
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          "Unable to load dashboard statistics."
-        );
-      }
+      const data = await apiRequest("/admin/stats");
 
       setStats({
         users: data.users ?? 0,

@@ -27,6 +27,7 @@ backend/test_gemini.py
 # Node
 node_modules/
 dist/
+work/
 
 # IDE
 .vscode/
@@ -39,3 +40,4 @@ Thumbs.db
 backend/chroma_db/
 backend/flask_session/
 flask_session/
+instance/

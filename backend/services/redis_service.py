@@ -2,8 +2,6 @@ import json
 import os
 import redis
 
-_memory_cache = {}
-
 redis_url = os.getenv("REDIS_URL")
 redis_client = redis.from_url(
     redis_url,
@@ -21,15 +19,15 @@ def get_chat_history(conversation_id):
     key = f"chat:{conversation_id}"
 
     if redis_client is None:
-        return _memory_cache.get(key, [])
+        return None
 
     try:
         data = redis_client.get(key)
     except redis.RedisError:
-        return _memory_cache.get(key, [])
+        return None
 
     if not data:
-        return []
+        return None
 
     return json.loads(data)
 
@@ -38,7 +36,6 @@ def save_chat_history(conversation_id, messages):
     key = f"chat:{conversation_id}"
 
     if redis_client is None:
-        _memory_cache[key] = messages
         return
 
     try:
@@ -48,17 +45,16 @@ def save_chat_history(conversation_id, messages):
             ex=3600
         )
     except redis.RedisError:
-        _memory_cache[key] = messages
+        return
 
 
 def delete_chat_history(conversation_id):
     key = f"chat:{conversation_id}"
 
     if redis_client is None:
-        _memory_cache.pop(key, None)
         return
 
     try:
         redis_client.delete(key)
     except redis.RedisError:
-        _memory_cache.pop(key, None)
+        return

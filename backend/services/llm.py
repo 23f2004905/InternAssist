@@ -5,16 +5,29 @@ import time
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key) if api_key else None
+class AIConfigurationError(RuntimeError):
+    pass
 
 
-def ask_gemini(context, question):
+class AIUpstreamError(RuntimeError):
+    pass
 
-    if client is None:
-        return "The AI answer service is not configured. Please ask an administrator to set GEMINI_API_KEY."
+
+def ask_gemini(context, question, history=None):
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise AIConfigurationError("The AI answer service is not configured.")
+
+    client = genai.Client(api_key=api_key)
 
     context = context[:12000]
+
+    history_text = "\n".join(
+        f"{message['role'].capitalize()}: {message['content']}"
+        for message in (history or [])[-12:]
+    )
 
     prompt = f"""
 You are InternAssist, an AI assistant for an internship placement platform.
@@ -24,6 +37,9 @@ If the answer isn't in the context, say you don't have enough information.
 
 Context:
 {context}
+
+Previous conversation:
+{history_text or "(none)"}
 
 Question:
 {question}
@@ -44,4 +60,4 @@ Question:
             if i < 2:
                 time.sleep(2 * (i + 1))
 
-    return "Gemini is temporarily unavailable. Please try again."
+    raise AIUpstreamError("The AI answer service is temporarily unavailable. Please try again.")

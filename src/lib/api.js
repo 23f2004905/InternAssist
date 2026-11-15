@@ -1,17 +1,45 @@
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+const localBaseUrl = typeof window === "undefined"
+  ? "http://localhost:5001/api"
+  : `${window.location.protocol}//${window.location.hostname}:5001/api`;
 
-export const API_BASE_URL = (configuredBaseUrl || "http://localhost:5001/api").replace(/\/$/, "");
+export const API_BASE_URL = (configuredBaseUrl || localBaseUrl).replace(/\/$/, "");
+
+let csrfToken = null;
+let csrfTokenPromise = null;
+
+export async function ensureCsrfToken() {
+  if (csrfToken) return csrfToken;
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = (async () => {
+      const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: "include" });
+      if (!response.ok) throw new Error("Unable to initialize a secure session.");
+      const payload = await response.json();
+      csrfToken = payload.csrf_token;
+      return csrfToken;
+    })().finally(() => { csrfTokenPromise = null; });
+  }
+  return csrfTokenPromise;
+}
+
+export function setCsrfToken(value) {
+  csrfToken = value || null;
+  csrfTokenPromise = null;
+}
 
 function getErrorMessage(payload, fallback) {
   return payload?.error || payload?.message || fallback;
 }
 
 export async function apiRequest(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const token = ["POST", "PUT", "PATCH", "DELETE"].includes(method) ? await ensureCsrfToken() : null;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     ...options,
     headers: {
       ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { "X-CSRF-Token": token } : {}),
       ...options.headers,
     },
   });
@@ -23,6 +51,7 @@ export async function apiRequest(path, options = {}) {
     const error = new Error(getErrorMessage(payload, `Request failed (${response.status}).`));
     error.status = response.status;
     error.payload = payload;
+    if (response.status === 401) window.dispatchEvent(new CustomEvent("internassist:unauthorized"));
     throw error;
   }
 
@@ -30,10 +59,11 @@ export async function apiRequest(path, options = {}) {
 }
 
 export function uploadDocument(formData, onProgress) {
-  return new Promise((resolve, reject) => {
+  return ensureCsrfToken().then((token) => new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("POST", `${API_BASE_URL}/documents`);
     request.withCredentials = true;
+    request.setRequestHeader("X-CSRF-Token", token);
 
     request.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
@@ -55,7 +85,7 @@ export function uploadDocument(formData, onProgress) {
     request.addEventListener("error", () => reject(new Error("Unable to connect to the server.")));
     request.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
     request.send(formData);
-  });
+  }));
 }
 
 export async function downloadDocument(item) {

@@ -11,7 +11,7 @@ InternAssist is a React + Flask application for browsing institutional documents
 - Admin upload for PDF, DOCX, PPTX and TXT, including validation and upload progress
 - Admin document deletion with confirmation and in-progress states
 - Conversation history, new/continued chats and message persistence
-- `POST /api/ask` integration using the backend's `{ "question": "..." }` payload
+- Atomic `POST /api/conversations/:id/ask` integration using persisted context
 - AI answers with document/page citations
 - Responsive layouts, loading states and accessible error/success feedback
 
@@ -34,10 +34,15 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
 pip install -r backend/requirements.txt
+cd backend
+flask --app app db upgrade
+cd ..
 python backend/app.py
 ```
 
-The backend runs at `http://localhost:5001`. Set `GEMINI_API_KEY` in `backend/.env` to enable generated answers. `REDIS_URL` is optional (for example, `redis://localhost:6379/0`) for the one-hour chat cache; without it the app uses a process-local cache. SQLite remains the source of truth for persisted messages.
+The backend runs at `http://localhost:5001`. Configure `SECRET_KEY`, `FRONTEND_ORIGINS`, and `GEMINI_API_KEY` in `backend/.env`; HTTPS production deployments must use `SESSION_COOKIE_SECURE=true`. `REDIS_URL` is optional and is only a cache—SQLite is always the source of truth for ordered messages and citations. A default administrator is created only when both `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` are explicitly set.
+
+Uploads support validated PDF, DOCX, PPTX, and UTF-8 TXT files up to `MAX_UPLOAD_BYTES` (20 MiB by default). Failed extraction or indexing is rolled back. Deletion removes the stored file, database row, and all associated vector chunks.
 
 ### Frontend
 
@@ -60,10 +65,12 @@ The frontend runs at `http://localhost:5173`.
 - `DELETE /api/documents/:id` (admin)
 - `GET|POST /api/conversations`
 - `GET|DELETE /api/conversations/:id`
-- `POST /api/conversations/:id/messages`: JSON `role`, `content`
+- `POST /api/conversations/:id/messages`: JSON user `role`, `content`
+- `POST /api/conversations/:id/ask`: JSON `question`; persists the user message, contextual answer, and citations
+- `GET /api/admin/conversations` (admin)
 - `POST /api/ask`: JSON `question`; returns `answer` and `citations`
 
-All frontend calls send `credentials: "include"` (or `withCredentials` for upload progress).
+All frontend calls send cookie credentials and mutating requests send the token obtained from `GET /api/auth/csrf`.
 
 ## Screenshots
 
@@ -78,5 +85,7 @@ All frontend calls send `credentials: "include"` (or `withCredentials` for uploa
 ```bash
 npm run lint
 npm run build
+npm test
 python -m compileall backend
+cd backend && pytest -q
 ```

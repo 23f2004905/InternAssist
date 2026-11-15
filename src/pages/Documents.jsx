@@ -24,6 +24,8 @@ export default function Documents() {
   const { currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
   const fileInput = useRef(null);
+  const mountedRef = useRef(true);
+  const uploadingRef = useRef(false);
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
@@ -36,16 +38,21 @@ export default function Documents() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const loadDocuments = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const data = await apiRequest("/documents");
-      setDocuments(data.documents || []);
+      if (mountedRef.current) setDocuments(data.documents || []);
     } catch (loadError) {
-      setError(loadError.message);
+      if (mountedRef.current) setError(loadError.message);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, []);
 
@@ -69,7 +76,8 @@ export default function Documents() {
   async function handleUpload(event) {
     event.preventDefault();
     const validationError = validateFile(file);
-    if (validationError) { setError(validationError); return; }
+    if (validationError || uploadingRef.current) { if (validationError) setError(validationError); return; }
+    uploadingRef.current = true;
     setUploading(true);
     setProgress(0);
     setError("");
@@ -79,6 +87,7 @@ export default function Documents() {
       body.append("title", title.trim());
       body.append("file", file);
       const data = await uploadDocument(body, setProgress);
+      if (!mountedRef.current) return;
       setMessage(data?.message || "Document uploaded successfully.");
       setTitle("");
       setFile(null);
@@ -86,9 +95,10 @@ export default function Documents() {
       setShowUpload(false);
       await loadDocuments();
     } catch (uploadError) {
-      setError(uploadError.message);
+      if (mountedRef.current) setError(uploadError.message);
     } finally {
-      setUploading(false);
+      uploadingRef.current = false;
+      if (mountedRef.current) setUploading(false);
     }
   }
 

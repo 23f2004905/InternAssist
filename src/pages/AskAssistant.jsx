@@ -14,12 +14,19 @@ export default function AskAssistant() {
   const { conversationId } = useParams();
   const navigate = useNavigate();
   const endRef = useRef(null);
+  const mountedRef = useRef(true);
+  const sendingRef = useRef(false);
   const [conversation, setConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(Boolean(conversationId));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (!conversationId) {
@@ -50,22 +57,15 @@ export default function AskAssistant() {
       method: "POST",
       body: JSON.stringify({ title: prompt.length > 64 ? `${prompt.slice(0, 61)}…` : prompt }),
     });
-    setConversation(data.conversation);
-    navigate(`/conversations/${data.conversation.id}`, { replace: true });
+    if (mountedRef.current) setConversation(data.conversation);
     return data.conversation.id;
-  }
-
-  async function saveMessage(id, role, content) {
-    return apiRequest(`/conversations/${id}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ role, content }),
-    });
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
     const prompt = question.trim();
-    if (!prompt || sending) return;
+    if (!prompt || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
     setError("");
     setQuestion("");
@@ -74,23 +74,25 @@ export default function AskAssistant() {
 
     try {
       const id = await ensureConversation(prompt);
-      await saveMessage(id, "user", prompt);
-      const result = await apiRequest("/ask", {
+      const result = await apiRequest(`/conversations/${id}/ask`, {
         method: "POST",
         body: JSON.stringify({ question: prompt }),
       });
-      const assistantMessage = {
-        id: `assistant-${Date.now()}`,
-        role: "assistant",
-        content: result.answer,
-        citations: result.citations || [],
-      };
-      setMessages((items) => [...items, assistantMessage]);
-      await saveMessage(id, "assistant", result.answer);
+      if (!mountedRef.current) return;
+      setConversation(result.conversation);
+      setMessages(result.messages || []);
+      if (!conversationId) navigate(`/conversations/${id}`, { replace: true });
     } catch (sendError) {
+      if (!mountedRef.current) return;
+      if (sendError.payload?.messages) setMessages(sendError.payload.messages);
+      if (sendError.payload?.conversation) {
+        setConversation(sendError.payload.conversation);
+        if (!conversationId) navigate(`/conversations/${sendError.payload.conversation.id}`, { replace: true });
+      }
       setError(sendError.message);
     } finally {
-      setSending(false);
+      sendingRef.current = false;
+      if (mountedRef.current) setSending(false);
     }
   }
 

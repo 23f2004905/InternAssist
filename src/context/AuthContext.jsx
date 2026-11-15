@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { apiRequest } from "../lib/api";
+import { apiRequest, ensureCsrfToken, setCsrfToken } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -9,16 +9,23 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let active = true;
-    apiRequest("/auth/me")
+    ensureCsrfToken().then(() => apiRequest("/auth/me"))
       .then((data) => active && setCurrentUser(data.user))
       .catch(() => active && setCurrentUser(null))
       .finally(() => active && setLoading(false));
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    const clearUnauthorizedSession = () => setCurrentUser(null);
+    window.addEventListener("internassist:unauthorized", clearUnauthorizedSession);
+    return () => window.removeEventListener("internassist:unauthorized", clearUnauthorizedSession);
+  }, []);
+
   async function login(email, password) {
     try {
       const data = await apiRequest("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      setCsrfToken(data.csrf_token);
       setCurrentUser(data.user);
       return { ok: true, user: data.user };
     } catch (error) {
@@ -40,7 +47,7 @@ export function AuthProvider({ children }) {
 
   async function logout() {
     try { await apiRequest("/auth/logout", { method: "POST" }); }
-    finally { setCurrentUser(null); }
+    finally { setCsrfToken(null); setCurrentUser(null); }
   }
 
   const value = useMemo(() => ({ currentUser, loading, login, register, logout }), [currentUser, loading]);

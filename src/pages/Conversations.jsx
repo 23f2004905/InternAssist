@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
 import Navbar from "../components/Navbar";
+import { useAuth } from "../context/AuthContext";
 import "./Conversations.css";
 
 function formatDate(value) {
@@ -11,6 +12,8 @@ function formatDate(value) {
 
 export default function Conversations() {
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
+  const isAdmin = currentUser?.role === "admin";
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState(null);
@@ -20,14 +23,14 @@ export default function Conversations() {
     setLoading(true);
     setError("");
     try {
-      const data = await apiRequest("/conversations");
+      const data = await apiRequest(isAdmin ? "/admin/conversations" : "/conversations");
       setConversations(data.conversations || []);
     } catch (loadError) {
       setError(loadError.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => { loadConversations(); }, [loadConversations]);
 
@@ -51,8 +54,8 @@ export default function Conversations() {
       <Navbar />
       <main className="conversations-main">
         <section className="conversations-header">
-          <div><p className="conversations-eyebrow">CONVERSATIONS</p><h1>My conversations</h1><p className="conversations-subtitle">Continue a previous question or start a fresh chat.</p></div>
-          <button className="new-conversation-button" onClick={() => navigate("/assistant")}>+ New conversation</button>
+          <div><p className="conversations-eyebrow">CONVERSATIONS</p><h1>{isAdmin ? "System conversations" : "My conversations"}</h1><p className="conversations-subtitle">{isAdmin ? "Review conversation activity across all users." : "Continue a previous question or start a fresh chat."}</p></div>
+          {!isAdmin && <button className="new-conversation-button" onClick={() => navigate("/assistant")}>+ New conversation</button>}
         </section>
         {error && <div className="conversation-error" role="alert">{error}</div>}
         {loading ? <div className="conversation-empty" role="status">Loading conversations…</div> : conversations.length === 0 ? (
@@ -60,9 +63,9 @@ export default function Conversations() {
         ) : (
           <section className="conversation-list" aria-label="Conversation history">
             {conversations.map((item) => (
-              <article className="conversation-card" key={item.id} onClick={() => navigate(`/conversations/${item.id}`)}>
-                <div className="conversation-card-main"><div className="conversation-icon">IA</div><div><h2>{item.title}</h2><p>Updated {formatDate(item.updated_at)}</p></div></div>
-                <button className="conversation-delete" onClick={(event) => deleteConversation(event, item.id)} disabled={deletingId === item.id}>{deletingId === item.id ? "Deleting…" : "Delete"}</button>
+              <article className="conversation-card" key={item.id} onClick={() => !isAdmin && navigate(`/conversations/${item.id}`)}>
+                <div className="conversation-card-main"><div className="conversation-icon">IA</div><div><h2>{item.title}</h2><p>{isAdmin ? `${item.user_name} · ${item.user_email} · ${item.message_count} messages · ` : ""}Updated {formatDate(item.updated_at)}</p></div></div>
+                {!isAdmin && <button className="conversation-delete" onClick={(event) => deleteConversation(event, item.id)} disabled={deletingId === item.id}>{deletingId === item.id ? "Deleting…" : "Delete"}</button>}
               </article>
             ))}
           </section>
