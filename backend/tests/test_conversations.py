@@ -15,7 +15,10 @@ def test_context_order_citations_and_cross_user_denial(client, monkeypatch):
         document_id = document.id
     response = client.post("/api/conversations", json={"title": "Policy"}, headers={"X-CSRF-Token": token})
     conversation_id = response.get_json()["conversation"]["id"]
-    monkeypatch.setattr(app_module, "search", lambda _question: [{"text": "context", "document_id": document_id, "page_number": 2}])
+    monkeypatch.setattr(app_module, "search", lambda _question: [
+        {"text": "context", "document_id": document_id, "page_number": 2},
+        {"text": "more context", "document_id": document_id, "page_number": 2},
+    ])
     histories = []
     monkeypatch.setattr(app_module, "ask_gemini", lambda context, question, history=None: histories.append(history) or "answer")
     assert client.post(f"/api/conversations/{conversation_id}/ask", json={"question": "first"}, headers={"X-CSRF-Token": token}).status_code == 200
@@ -24,6 +27,7 @@ def test_context_order_citations_and_cross_user_denial(client, monkeypatch):
     assert histories[1][0]["content"] == "first"
     reloaded = client.get(f"/api/conversations/{conversation_id}").get_json()["messages"]
     assert reloaded[-1]["citations"][0]["page_number"] == 2
+    assert len(reloaded[-1]["citations"]) == 1
 
     create_user("other@example.com")
     _, _ = login(client, "other@example.com")
@@ -57,3 +61,28 @@ def test_orphaned_vector_chunks_are_never_used(client, monkeypatch):
     response = client.post(f"/api/conversations/{conversation_id}/ask", json={"question": "question"}, headers={"X-CSRF-Token": token})
     assert response.status_code == 200
     assert response.get_json()["message"]["citations"] == []
+
+
+def test_conversation_routes_reject_malformed_text_fields(client):
+    create_user()
+    _, token = login(client)
+    created = client.post(
+        "/api/conversations",
+        json={"title": {"unexpected": True}},
+        headers={"X-CSRF-Token": token},
+    )
+    assert created.status_code == 201
+    conversation_id = created.get_json()["conversation"]["id"]
+    assert created.get_json()["conversation"]["title"] == "New Conversation"
+    message = client.post(
+        f"/api/conversations/{conversation_id}/messages",
+        json={"role": "user", "content": ["not text"]},
+        headers={"X-CSRF-Token": token},
+    )
+    assert message.status_code == 400
+    question = client.post(
+        f"/api/conversations/{conversation_id}/ask",
+        json={"question": {"unexpected": True}},
+        headers={"X-CSRF-Token": token},
+    )
+    assert question.status_code == 400

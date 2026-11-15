@@ -80,7 +80,7 @@ def delete_document_chunks(document_id):
 def restore_document_chunks(chunks):
     if not chunks:
         return
-    _get_collection().add(
+    _get_collection().upsert(
         ids=[chunk["id"] for chunk in chunks],
         documents=[chunk["text"] for chunk in chunks],
         metadatas=[chunk["metadata"] for chunk in chunks],

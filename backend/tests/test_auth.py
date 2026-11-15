@@ -29,3 +29,25 @@ def test_inactive_session_and_role_authorization(client):
     response, _ = login(client, "faculty@example.com")
     assert response.status_code == 200
     assert client.get("/api/admin/users").status_code == 403
+
+
+def test_auth_rejects_malformed_fields_and_short_passwords(client):
+    token = csrf(client)
+    malformed = client.post(
+        "/api/auth/register",
+        json={"name": {"unexpected": True}, "email": ["bad"], "password": 123456, "role": "student"},
+        headers={"X-CSRF-Token": token},
+    )
+    assert malformed.status_code == 400
+    short = client.post(
+        "/api/auth/register",
+        json={"name": "Student", "email": "student@example.com", "password": "12345", "role": "student"},
+        headers={"X-CSRF-Token": token},
+    )
+    assert short.status_code == 400
+    bad_login = client.post(
+        "/api/auth/login",
+        json={"email": {"unexpected": True}, "password": ["bad"]},
+        headers={"X-CSRF-Token": token},
+    )
+    assert bad_login.status_code == 401

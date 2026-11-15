@@ -95,6 +95,13 @@ def allowed_file(filename):
     return bool(filename and "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS)
 
 
+def text_field(data, key, default="", strip=True):
+    value = data.get(key, default)
+    if not isinstance(value, str):
+        return ""
+    return value.strip() if strip else value
+
+
 def ordered_messages(conversation_id):
     return Message.query.filter_by(conversation_id=conversation_id).order_by(Message.id.asc()).all()
 
@@ -112,6 +119,20 @@ def citation_for_chunk(chunk):
     return {"document_id": document.id, "document_name": document.filename, "page_number": chunk.get("page_number")}
 
 
+def citations_for_chunks(chunks):
+    citations = []
+    seen = set()
+    for chunk in chunks:
+        citation = citation_for_chunk(chunk)
+        if not citation:
+            continue
+        key = (citation["document_id"], citation["page_number"])
+        if key not in seen:
+            seen.add(key)
+            citations.append(citation)
+    return citations
+
+
 def answer_conversation(conversation, question):
     previous = [message.to_dict() for message in ordered_messages(conversation.id)]
     user_message = Message(conversation_id=conversation.id, role="user", content=question)
@@ -123,8 +144,7 @@ def answer_conversation(conversation, question):
         chunk for chunk in search(question)
         if db.session.get(Document, chunk.get("document_id")) is not None
     ]
-    citations = [citation_for_chunk(chunk) for chunk in retrieved]
-    citations = [citation for citation in citations if citation]
+    citations = citations_for_chunks(retrieved)
     answer = ask_gemini("\n\n".join(chunk["text"] for chunk in retrieved), question, previous) if retrieved else "I don't have any relevant documents to answer this question yet."
     assistant = Message(conversation_id=conversation.id, role="assistant", content=answer, citations_json=json.dumps(citations))
     conversation.updated_at = datetime.utcnow()
@@ -148,10 +168,12 @@ def csrf_token():
 @app.post("/api/auth/register")
 def register():
     data = request.get_json(silent=True) or {}
-    name, email, password = data.get("name", "").strip(), data.get("email", "").strip().lower(), data.get("password", "")
-    role = data.get("role", "student")
+    name, email, password = text_field(data, "name"), text_field(data, "email").lower(), text_field(data, "password", strip=False)
+    role = text_field(data, "role", "student")
     if not name or not email or not password:
         return jsonify({"error": "Name, email and password are required."}), 400
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long."}), 400
     if role not in {"student", "faculty"}:
         return jsonify({"error": "Invalid role."}), 400
     if User.query.filter_by(email=email).first():
@@ -166,8 +188,9 @@ def register():
 @app.post("/api/auth/login")
 def login():
     data = request.get_json(silent=True) or {}
-    user = User.query.filter_by(email=data.get("email", "").strip().lower()).first()
-    if not user or not user.check_password(data.get("password", "")):
+    email, password = text_field(data, "email").lower(), text_field(data, "password", strip=False)
+    user = User.query.filter_by(email=email).first() if email else None
+    if not user or not password or not user.check_password(password):
         return jsonify({"error": "Invalid email or password."}), 401
     if not user.active:
         session.clear()
@@ -235,7 +258,8 @@ def upload_document():
         chunks = [{"text": text, "page_number": page["page_number"]} for page in pages for text in chunk_text(page["text"]) if text.strip()]
         if not chunks:
             raise DocumentExtractionError("The document does not contain extractable text.")
-        document = Document(title=request.form.get("title", "").strip() or Path(original).stem, filename=original, stored_filename=stored, file_type=extension.upper(), file_size=size, status="indexed", uploaded_by_id=user.id)
+        title = (request.form.get("title", "").strip() or Path(original).stem)[:200]
+        document = Document(title=title, filename=original[:255], stored_filename=stored, file_type=extension.upper(), file_size=size, status="indexed", uploaded_by_id=user.id)
         db.session.add(document)
         db.session.flush()
         indexed = True
@@ -364,7 +388,7 @@ def create_conversation():
     user, error = require_user()
     if error:
         return error
-    title = (request.get_json(silent=True) or {}).get("title", "New Conversation").strip() or "New Conversation"
+    title = text_field(request.get_json(silent=True) or {}, "title", "New Conversation") or "New Conversation"
     conversation = Conversation(title=title[:200], user_id=user.id)
     db.session.add(conversation)
     db.session.commit()
@@ -391,9 +415,9 @@ def add_message(conversation_id):
     if not conversation:
         return jsonify({"error": "Conversation not found."}), 404
     data = request.get_json(silent=True) or {}
-    if data.get("role") != "user":
+    if text_field(data, "role") != "user":
         return jsonify({"error": "Only user messages may be submitted by clients."}), 400
-    content = data.get("content", "").strip()
+    content = text_field(data, "content")
     if not content:
         return jsonify({"error": "Message content is required."}), 400
     message = Message(conversation_id=conversation.id, role="user", content=content)
@@ -412,7 +436,7 @@ def ask_in_conversation(conversation_id):
     conversation = Conversation.query.filter_by(id=conversation_id, user_id=user.id).first()
     if not conversation:
         return jsonify({"error": "Conversation not found."}), 404
-    question = (request.get_json(silent=True) or {}).get("question", "").strip()
+    question = text_field(request.get_json(silent=True) or {}, "question")
     if not question:
         return jsonify({"error": "Question is required."}), 400
     try:
@@ -452,7 +476,7 @@ def ask():
     _, error = require_user()
     if error:
         return error
-    question = (request.get_json(silent=True) or {}).get("question", "").strip()
+    question = text_field(request.get_json(silent=True) or {}, "question")
     if not question:
         return jsonify({"error": "Question is required."}), 400
     retrieved = [
@@ -461,14 +485,14 @@ def ask():
     ]
     if not retrieved:
         return jsonify({"question": question, "answer": "I don't have any relevant documents to answer this question yet.", "citations": []})
-    citations = [citation_for_chunk(chunk) for chunk in retrieved]
+    citations = citations_for_chunks(retrieved)
     try:
         answer = ask_gemini("\n\n".join(chunk["text"] for chunk in retrieved), question)
     except AIConfigurationError as ai_error:
         return jsonify({"error": str(ai_error)}), 503
     except AIUpstreamError as ai_error:
         return jsonify({"error": str(ai_error)}), 502
-    return jsonify({"question": question, "answer": answer, "citations": [item for item in citations if item]})
+    return jsonify({"question": question, "answer": answer, "citations": citations})
 
 
 if __name__ == "__main__":

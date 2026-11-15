@@ -34,4 +34,19 @@ describe("apiRequest", () => {
     expect(second).toBe("one-token");
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  it("refreshes a rotated CSRF session and retries a rejected mutation once", async () => {
+    setCsrfToken("stale-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Invalid or missing CSRF token." }), { status: 403, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: "fresh-token" }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: "created" }), { status: 201, headers: { "Content-Type": "application/json" } }));
+
+    await expect(apiRequest("/conversations", { method: "POST", body: JSON.stringify({ title: "Recovered" }) }))
+      .resolves.toEqual({ message: "created" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][1].headers["X-CSRF-Token"]).toBe("stale-token");
+    expect(fetchMock.mock.calls[2][1].headers["X-CSRF-Token"]).toBe("fresh-token");
+  });
 });

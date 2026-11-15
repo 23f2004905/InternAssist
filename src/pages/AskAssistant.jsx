@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { apiRequest } from "../lib/api";
 import Navbar from "../components/Navbar";
 import "./AskAssistant.css";
@@ -12,13 +12,14 @@ const SUGGESTIONS = [
 
 export default function AskAssistant() {
   const { conversationId } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const endRef = useRef(null);
   const mountedRef = useRef(true);
   const sendingRef = useRef(false);
   const [conversation, setConversation] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useState(() => location.state?.question || "");
   const [loadingHistory, setLoadingHistory] = useState(Boolean(conversationId));
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -27,6 +28,14 @@ export default function AskAssistant() {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+
+  useEffect(() => {
+    const routedQuestion = location.state?.question?.trim();
+    if (!conversationId && routedQuestion) {
+      setQuestion(routedQuestion);
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [conversationId, location.pathname, location.state, navigate]);
 
   useEffect(() => {
     if (!conversationId) {

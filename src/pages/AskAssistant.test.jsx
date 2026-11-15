@@ -32,3 +32,12 @@ it("shows persisted citations when a conversation is reopened", async () => {
   expect(await screen.findByText("policy.pdf")).toBeInTheDocument();
   expect(screen.getByText(/Page 4/)).toBeInTheDocument();
 });
+
+it("prefills a question handed off from a dashboard", async () => {
+  render(
+    <MemoryRouter initialEntries={[{ pathname: "/assistant", state: { question: "What is the internship deadline?" } }]}>
+      <Routes><Route path="/assistant" element={<AskAssistant />} /></Routes>
+    </MemoryRouter>,
+  );
+  expect(screen.getByLabelText("Ask a question")).toHaveValue("What is the internship deadline?");
+});

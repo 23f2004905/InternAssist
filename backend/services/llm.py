@@ -52,7 +52,10 @@ Question:
                 contents=prompt
             )
 
-            return response.text
+            answer = (response.text or "").strip()
+            if not answer:
+                raise RuntimeError("The AI service returned an empty response.")
+            return answer
 
         except Exception as e:
             print("Gemini attempt", i + 1, "failed:", e)

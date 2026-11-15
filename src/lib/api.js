@@ -8,6 +8,16 @@ export const API_BASE_URL = (configuredBaseUrl || localBaseUrl).replace(/\/$/, "
 let csrfToken = null;
 let csrfTokenPromise = null;
 
+function emitUnauthorized() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("internassist:unauthorized"));
+  }
+}
+
+function isCsrfFailure(response, payload) {
+  return response.status === 403 && payload?.error === "Invalid or missing CSRF token.";
+}
+
 export async function ensureCsrfToken() {
   if (csrfToken) return csrfToken;
   if (!csrfTokenPromise) {
@@ -15,6 +25,7 @@ export async function ensureCsrfToken() {
       const response = await fetch(`${API_BASE_URL}/auth/csrf`, { credentials: "include" });
       if (!response.ok) throw new Error("Unable to initialize a secure session.");
       const payload = await response.json();
+      if (!payload?.csrf_token) throw new Error("The server returned an invalid secure session.");
       csrfToken = payload.csrf_token;
       return csrfToken;
     })().finally(() => { csrfTokenPromise = null; });
@@ -33,59 +44,86 @@ function getErrorMessage(payload, fallback) {
 
 export async function apiRequest(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
-  const token = ["POST", "PUT", "PATCH", "DELETE"].includes(method) ? await ensureCsrfToken() : null;
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: "include",
-    ...options,
-    headers: {
-      ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { "X-CSRF-Token": token } : {}),
-      ...options.headers,
-    },
-  });
+  const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
+  async function send(attempt = 0) {
+    const token = mutating ? await ensureCsrfToken() : null;
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      credentials: "include",
+      ...options,
+      headers: {
+        ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+        ...(token ? { "X-CSRF-Token": token } : {}),
+      },
+    });
 
-  if (!response.ok) {
-    const error = new Error(getErrorMessage(payload, `Request failed (${response.status}).`));
-    error.status = response.status;
-    error.payload = payload;
-    if (response.status === 401) window.dispatchEvent(new CustomEvent("internassist:unauthorized"));
-    throw error;
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : null;
+
+    // A server restart, expired cookie, or inactive-session cleanup can rotate the
+    // session while this module still holds its previous token. The rejected
+    // request has not reached the route handler, so it is safe to bootstrap a new
+    // token and retry it exactly once.
+    if (mutating && attempt === 0 && isCsrfFailure(response, payload)) {
+      setCsrfToken(null);
+      return send(1);
+    }
+
+    if (!response.ok) {
+      const error = new Error(getErrorMessage(payload, `Request failed (${response.status}).`));
+      error.status = response.status;
+      error.payload = payload;
+      if (response.status === 401) emitUnauthorized();
+      throw error;
+    }
+
+    return payload;
   }
 
-  return payload;
+  return send();
 }
 
 export function uploadDocument(formData, onProgress) {
-  return ensureCsrfToken().then((token) => new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("POST", `${API_BASE_URL}/documents`);
-    request.withCredentials = true;
-    request.setRequestHeader("X-CSRF-Token", token);
+  async function send(attempt = 0) {
+    const token = await ensureCsrfToken();
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `${API_BASE_URL}/documents`);
+      request.withCredentials = true;
+      request.setRequestHeader("X-CSRF-Token", token);
 
-    request.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
-    });
+      request.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+      });
 
-    request.addEventListener("load", () => {
-      let payload = null;
-      try { payload = request.responseText ? JSON.parse(request.responseText) : null; } catch { /* handled below */ }
-      if (request.status >= 200 && request.status < 300) {
-        onProgress?.(100);
-        resolve(payload);
-      } else {
+      request.addEventListener("load", async () => {
+        let payload = null;
+        try { payload = request.responseText ? JSON.parse(request.responseText) : null; } catch { /* handled below */ }
+        if (request.status >= 200 && request.status < 300) {
+          onProgress?.(100);
+          resolve(payload);
+          return;
+        }
+        if (attempt === 0 && request.status === 403 && payload?.error === "Invalid or missing CSRF token.") {
+          setCsrfToken(null);
+          try { resolve(await send(1)); } catch (error) { reject(error); }
+          return;
+        }
+        if (request.status === 401) emitUnauthorized();
         const error = new Error(getErrorMessage(payload, `Upload failed (${request.status || "network error"}).`));
         error.status = request.status;
+        error.payload = payload;
         reject(error);
-      }
-    });
+      });
 
-    request.addEventListener("error", () => reject(new Error("Unable to connect to the server.")));
-    request.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
-    request.send(formData);
-  }));
+      request.addEventListener("error", () => reject(new Error("Unable to connect to the server.")));
+      request.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
+      request.send(formData);
+    });
+  }
+
+  return send();
 }
 
 export async function downloadDocument(item) {
@@ -93,7 +131,11 @@ export async function downloadDocument(item) {
   if (!response.ok) {
     let payload = null;
     try { payload = await response.json(); } catch { /* use fallback */ }
-    throw new Error(getErrorMessage(payload, "Unable to download this document."));
+    if (response.status === 401) emitUnauthorized();
+    const error = new Error(getErrorMessage(payload, "Unable to download this document."));
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   const blob = await response.blob();
@@ -104,5 +146,5 @@ export async function downloadDocument(item) {
   window.document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(objectUrl);
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
