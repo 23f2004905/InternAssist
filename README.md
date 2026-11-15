@@ -1,16 +1,92 @@
-# React + Vite
+# InternAssist
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+InternAssist is a React + Flask application for browsing institutional documents and asking source-grounded questions about them.
 
-Currently, two official plugins are available:
+## Frontend features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Session-based login, registration, current-user restoration and logout
+- Cookie credentials on every authenticated API request
+- Role-aware dashboards and navigation
+- Document library with authenticated download
+- Admin upload for PDF, DOCX, PPTX and TXT, including validation and upload progress
+- Admin document deletion with confirmation and in-progress states
+- Conversation history, new/continued chats and message persistence
+- Atomic `POST /api/conversations/:id/ask` integration using persisted context
+- AI answers with document/page citations
+- Responsive layouts, loading states and accessible error/success feedback
 
-## React Compiler
+## Frontend environment variables
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Copy `.env.example` to `.env` when the Flask API is not running at the default address.
 
-## Expanding the Oxlint configuration
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `VITE_API_BASE_URL` | No | `http://localhost:5001/api` | Full Flask API root, without a trailing slash. |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Vite reads environment variables at startup, so restart the frontend after changing `.env`.
+
+## Run locally
+
+### Backend
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r backend/requirements.txt
+cd backend
+# Existing PostgreSQL deployments: apply migrations/001_document_files.sql,
+# then migrations/002_message_citations.sql using your database SQL console.
+cd ..
+python backend/app.py
+```
+
+The backend runs at `http://localhost:5001`. Configure `SECRET_KEY`, `FRONTEND_ORIGINS`, and `GEMINI_API_KEY` in `backend/.env`; HTTPS production deployments must use `SESSION_COOKIE_SECURE=true`. `REDIS_URL` is optional and is only a cache—the relational database is always the source of truth for ordered messages and citations. A default administrator is created only when both `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` (or `ADMIN_EMAIL` and `ADMIN_PASSWORD`) are explicitly set.
+
+Uploads support validated PDF, DOCX, PPTX, and TXT files up to `MAX_UPLOAD_BYTES` (20 MiB by default). Original bytes are committed to the database before background indexing, so an indexing outage cannot lose an upload. Deletion removes the cached file, database row, durable bytes, and associated vector chunks with rollback protection.
+
+### Frontend
+
+```bash
+npm ci
+npm run dev
+```
+
+The frontend runs at `http://localhost:5173`.
+
+## Verified backend contracts
+
+- `POST /api/auth/register`: JSON `name`, `email`, `password`, `role`
+- `POST /api/auth/login`: JSON `email`, `password`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+- `GET /api/documents`
+- `POST /api/documents`: multipart fields `title`, `file` (admin)
+- `GET /api/documents/:id/download`
+- `DELETE /api/documents/:id` (admin)
+- `GET|POST /api/conversations`
+- `GET|DELETE /api/conversations/:id`
+- `POST /api/conversations/:id/messages`: JSON user `role`, `content`
+- `POST /api/conversations/:id/ask`: JSON `question`; persists the user message, contextual answer, and citations
+- `GET /api/admin/conversations` (admin)
+- `POST /api/ask`: JSON `question`; returns `answer` and `citations`
+
+All frontend calls send cookie credentials and mutating requests send the token obtained from `GET /api/auth/csrf`.
+
+## Screenshots
+
+- [Login](docs/screenshots/01-login.png)
+- [Admin dashboard](docs/screenshots/02-dashboard.png)
+- [Document upload](docs/screenshots/03-upload.png)
+- [Chat](docs/screenshots/04-chat.png)
+- [Mobile documents](docs/screenshots/05-mobile-documents.png)
+
+## Checks
+
+```bash
+npm run lint
+npm run build
+npm test
+python -m compileall backend
+cd backend && pytest -q
+```

@@ -165,17 +165,18 @@ def add_chunks(chunks, document_id, batch_size=64):
             task_type="RETRIEVAL_DOCUMENT",
         )
 
+        metadatas = []
+        for chunk in batch:
+            metadata = {"document_id": document_id}
+            if chunk.get("page_number") is not None:
+                metadata["page_number"] = int(chunk["page_number"])
+            metadatas.append(metadata)
+
         target.add(
             documents=texts,
             embeddings=embeddings,
             ids=[str(uuid4()) for _ in batch],
-            metadatas=[
-                {
-                    "document_id": document_id,
-                    "page_number": int(chunk["page_number"]),
-                }
-                for chunk in batch
-            ],
+            metadatas=metadatas,
         )
 
         inserted += len(batch)
@@ -244,6 +245,49 @@ def delete_document_chunks(document_id):
             type(exc).__name__,
         )
         raise
+
+
+def get_document_chunks(document_id):
+    """Capture a document's vector records so a failed delete can be rolled back."""
+    result = _get_collection().get(
+        where={"document_id": document_id},
+        include=["documents", "metadatas", "embeddings"],
+    )
+    ids = result.get("ids") or []
+    documents = result.get("documents") or []
+    metadatas = result.get("metadatas") or []
+    embeddings = result.get("embeddings")
+    if embeddings is not None:
+        embeddings = list(embeddings)
+    else:
+        embeddings = []
+    return [
+        {
+            "id": record_id,
+            "document": documents[index],
+            "metadata": metadatas[index],
+            "embedding": embeddings[index] if index < len(embeddings) else None,
+        }
+        for index, record_id in enumerate(ids)
+    ]
+
+
+def restore_document_chunks(records):
+    """Restore captured records using upsert so rollback is idempotent."""
+    if not records:
+        return
+    kwargs = {
+        "ids": [record["id"] for record in records],
+        "documents": [record["document"] for record in records],
+        "metadatas": [record["metadata"] for record in records],
+    }
+    if all(record.get("embedding") is not None for record in records):
+        kwargs["embeddings"] = [record["embedding"] for record in records]
+    else:
+        kwargs["embeddings"] = _embed_texts(
+            kwargs["documents"], task_type="RETRIEVAL_DOCUMENT"
+        )
+    _get_collection().upsert(**kwargs)
 
 
 def indexed_document_ids(document_id=None):

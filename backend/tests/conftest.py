@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.resolve()}"
 os.environ["CHROMA_DB_PATH"] = str(TEST_DB_DIR / "chroma_test_db")
 
 from app import app, db
+from models import User
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -44,3 +45,27 @@ def client(test_database):
 
     with app.test_client() as test_client:
         yield test_client
+
+
+def csrf(client):
+    return client.get("/api/auth/csrf").get_json()["csrf_token"]
+
+
+def create_user(email="student@example.com", role="student", active=True):
+    with app.app_context():
+        user = User(name="Test User", email=email, role=role, active=active)
+        user.set_password("password123")
+        db.session.add(user)
+        db.session.commit()
+        return user.id
+
+
+def login(client, email="student@example.com"):
+    token = csrf(client)
+    response = client.post(
+        "/api/auth/login",
+        json={"email": email, "password": "password123"},
+        headers={"X-CSRF-Token": token},
+    )
+    payload = response.get_json() or {}
+    return response, payload.get("csrf_token")

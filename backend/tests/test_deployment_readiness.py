@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app import app, db, create_default_admin, normalize_database_url, is_production
-from models import User, Conversation, Message
+from models import User, Conversation, Document, Message
 from services.redis_service import (
     get_chat_history,
     save_chat_history,
@@ -14,6 +14,19 @@ from services.redis_service import (
     build_redis_client
 )
 from services.llm import ask_gemini, get_gemini_client, DEFAULT_GEMINI_MODEL
+
+
+def _create_indexed_document(filename="policy.pdf"):
+    with app.app_context():
+        owner = User.query.first()
+        document = Document(
+            title="Policy", filename=filename, stored_filename=filename,
+            file_type="PDF", file_size=10, status="indexed",
+            uploaded_by_id=owner.id,
+        )
+        db.session.add(document)
+        db.session.commit()
+        return document.id
 
 
 def test_normalize_database_url():
@@ -359,8 +372,9 @@ def test_ask_endpoint_authenticated_flow(client):
     empty_resp = client.post("/api/ask", json={"question": ""})
     assert empty_resp.status_code == 400
 
+    document_id = _create_indexed_document()
     fake_chunks = [
-        {"text": "Policy chunk 1", "document_id": 9999, "page_number": 1, "distance": 0.1}
+        {"text": "Policy chunk 1", "document_id": document_id, "page_number": 1, "distance": 0.1}
     ]
     with patch("app.search", return_value=fake_chunks), \
          patch("app.ask_gemini", return_value="Here is the retrieved answer."):
@@ -370,7 +384,7 @@ def test_ask_endpoint_authenticated_flow(client):
         assert data["question"] == "What is the policy?"
         assert data["answer"] == "Here is the retrieved answer."
         assert len(data["citations"]) == 1
-        assert data["citations"][0]["document_name"] == "Unknown document"
+        assert data["citations"][0]["document_name"] == "policy.pdf"
         assert data["citations"][0]["page_number"] == 1
 
 
@@ -393,13 +407,14 @@ def test_ask_endpoint_resilient_to_search_and_gemini_failures(client):
         data = resp.get_json()
         assert data["status"] == "retrieval_failed"
 
-    fake_chunks = [{"text": "Doc context", "document_id": 1, "page_number": 1, "distance": 0.2}]
+    document_id = _create_indexed_document()
+    fake_chunks = [{"text": "Doc context", "document_id": document_id, "page_number": 1, "distance": 0.2}]
     with patch("app.search", return_value=fake_chunks), \
          patch("app.ask_gemini", side_effect=Exception("Gemini network timeout")):
         resp2 = client.post("/api/ask", json={"question": "Can I apply?"})
-        assert resp2.status_code == 200
+        assert resp2.status_code == 502
         data2 = resp2.get_json()
-        assert "Gemini is temporarily unavailable" in data2["answer"]
+        assert "temporarily unavailable" in data2["error"]
 
 
 def test_redis_cache_miss_rebuilds_complete_history(client):
@@ -427,15 +442,15 @@ def test_redis_cache_miss_rebuilds_complete_history(client):
 
     with patch("app.get_chat_history", return_value=[]), \
          patch("app.save_chat_history", side_effect=mock_save):
-        msg2_resp = client.post(
-            f"/api/conversations/{conv_id}/messages",
-            json={"role": "assistant", "content": "Message 2"}
-        )
-        assert msg2_resp.status_code == 201
-        assert len(saved_histories) == 1
-        assert len(saved_histories[0]) == 2
-        assert saved_histories[0][0]["content"] == "Message 1"
-        assert saved_histories[0][1]["content"] == "Message 2"
+        with app.app_context():
+            db.session.add(Message(conversation_id=conv_id, role="assistant", content="Message 2"))
+            db.session.commit()
+        response = client.get(f"/api/conversations/{conv_id}")
+        assert response.status_code == 200
+        assert len(saved_histories) >= 1
+        assert len(saved_histories[-1]) == 2
+        assert saved_histories[-1][0]["content"] == "Message 1"
+        assert saved_histories[-1][1]["content"] == "Message 2"
 
 
 def test_ask_endpoint_deduplicates_citations(client):
@@ -451,10 +466,11 @@ def test_ask_endpoint_deduplicates_citations(client):
         "password": "Password123!"
     })
 
+    document_id = _create_indexed_document()
     duplicate_chunks = [
-        {"text": "Chunk 1", "document_id": 1, "page_number": 1, "distance": 0.1},
-        {"text": "Chunk 2", "document_id": 1, "page_number": 1, "distance": 0.15},
-        {"text": "Chunk 3", "document_id": 1, "page_number": 2, "distance": 0.2},
+        {"text": "Chunk 1", "document_id": document_id, "page_number": 1, "distance": 0.1},
+        {"text": "Chunk 2", "document_id": document_id, "page_number": 1, "distance": 0.15},
+        {"text": "Chunk 3", "document_id": document_id, "page_number": 2, "distance": 0.2},
     ]
 
     with patch("app.search", return_value=duplicate_chunks), \

@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -153,6 +154,12 @@ class Message(db.Model):
         nullable=False
     )
 
+    citations_json = db.Column(
+        db.Text,
+        nullable=False,
+        default="[]"
+    )
+
     created_at = db.Column(
         db.DateTime,
         default=utcnow_naive
@@ -160,11 +167,17 @@ class Message(db.Model):
 
     def to_dict(self):
 
+        try:
+            citations = json.loads(self.citations_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            citations = []
+
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
             "role": self.role,
             "content": self.content,
+            "citations": citations,
             "created_at": (
                 self.created_at.isoformat()
                 if self.created_at

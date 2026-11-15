@@ -9,6 +9,10 @@ from docx.text.paragraph import Paragraph
 from pptx import Presentation
 
 
+class DocumentExtractionError(ValueError):
+    """Raised when an uploaded document cannot be safely decoded."""
+
+
 def _iter_docx_blocks(document: _DocxDocument):
     """Yield Paragraph and Table objects in document body order."""
     body = document.element.body
@@ -95,4 +99,11 @@ def iter_document_pages(file_path, extension):
 
 def extract_document_pages(file_path, extension):
     """Backward-compatible list API; prefer iter_document_pages for indexing."""
-    return list(iter_document_pages(file_path, extension))
+    try:
+        return list(iter_document_pages(file_path, extension))
+    except (FileNotFoundError, ValueError):
+        raise
+    except Exception as exc:
+        raise DocumentExtractionError(
+            "The document is malformed or could not be read."
+        ) from exc

@@ -32,6 +32,7 @@ backend/test_gemini.py
 # Node
 node_modules/
 dist/
+work/
 
 # IDE
 .vscode/

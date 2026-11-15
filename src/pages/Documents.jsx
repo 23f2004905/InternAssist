@@ -1,721 +1,191 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiRequest, downloadDocument, uploadDocument } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import Navbar from "../components/Navbar";
-import { getApiBaseUrl, parseJsonResponse } from "../utils/api";
 import "./Documents.css";
 
-const API_URL = getApiBaseUrl();
+const ALLOWED_EXTENSIONS = ["pdf", "docx", "pptx", "txt"];
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
+
+function formatFileSize(bytes) {
+  if (bytes === 0) return "0 B";
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(value) {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 export default function Documents() {
   const { currentUser } = useAuth();
-  const fileInputRef = useRef(null);
-
+  const isAdmin = currentUser?.role === "admin";
+  const fileInput = useRef(null);
+  const mountedRef = useRef(true);
+  const uploadingRef = useRef(false);
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
-
   const [showUpload, setShowUpload] = useState(false);
-
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
-
   const [uploading, setUploading] = useState(false);
-
+  const [progress, setProgress] = useState(0);
+  const [downloadingId, setDownloadingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const isAdmin = currentUser?.role === "admin";
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
-
-  // --------------------------------
-  // Load documents
-  // --------------------------------
-
-  const loadDocuments = useCallback(async ({ silent = false } = {}) => {
+  const loadDocuments = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      if (!silent) {
-        setLoading(true);
-      }
-      setError("");
-
-      const response = await fetch(
-        `${API_URL}/api/documents`,
-        {
-          credentials: "include",
-        }
-      );
-
-      const data = await parseJsonResponse(
-        response,
-        "Unable to load documents."
-      );
-
-      setDocuments(data.documents || []);
-
-    } catch (err) {
-      setError(err.message);
+      const data = await apiRequest("/documents");
+      if (mountedRef.current) setDocuments(data.documents || []);
+    } catch (loadError) {
+      if (mountedRef.current) setError(loadError.message);
     } finally {
-      if (!silent) {
-        setLoading(false);
-      }
+      if (mountedRef.current) setLoading(false);
     }
   }, []);
 
+  useEffect(() => { loadDocuments(); }, [loadDocuments]);
 
-  useEffect(() => {
-    loadDocuments();
-  }, [loadDocuments]);
+  function validateFile(selectedFile) {
+    if (!selectedFile) return "Please select a document.";
+    const extension = selectedFile.name.split(".").pop()?.toLowerCase();
+    if (!ALLOWED_EXTENSIONS.includes(extension)) return "Choose a PDF, DOCX, PPTX or TXT file.";
+    if (selectedFile.size > MAX_FILE_SIZE) return "File is too large. Maximum size is 20 MB.";
+    return "";
+  }
 
-  // Poll briefly while any uploaded document is still indexing in the background
-  useEffect(() => {
-    const hasPending = documents.some((doc) => doc.status === "pending");
-    if (!hasPending) return;
+  function handleFileChange(event) {
+    const selectedFile = event.target.files?.[0] || null;
+    const validationError = validateFile(selectedFile);
+    setError(validationError);
+    setFile(validationError ? null : selectedFile);
+  }
 
-    let attempts = 0;
-    const intervalId = setInterval(() => {
-      attempts += 1;
-      if (attempts > 15) {
-        clearInterval(intervalId);
-        return;
-      }
-      loadDocuments({ silent: true });
-    }, 2000);
-
-    return () => clearInterval(intervalId);
-  }, [documents, loadDocuments]);
-
-
-  // --------------------------------
-  // Upload
-  // --------------------------------
-
-  async function handleUpload(e) {
-    e.preventDefault();
-
+  async function handleUpload(event) {
+    event.preventDefault();
+    const validationError = validateFile(file);
+    if (validationError || uploadingRef.current) { if (validationError) setError(validationError); return; }
+    uploadingRef.current = true;
+    setUploading(true);
+    setProgress(0);
     setError("");
     setMessage("");
-
-    if (!file) {
-      setError("Please select a document.");
-      return;
-    }
-
-    setUploading(true);
-
     try {
-      const formData = new FormData();
-
-      formData.append(
-        "title",
-        title.trim()
-      );
-
-      formData.append(
-        "file",
-        file
-      );
-
-      const response = await fetch(
-        `${API_URL}/api/documents`,
-        {
-          method: "POST",
-          credentials: "include",
-          body: formData,
-        }
-      );
-
-      const data = await parseJsonResponse(
-        response,
-        "Upload failed."
-      );
-
-      setMessage(
-        data.indexing_pending
-          ? "Document stored safely. Indexing is running in the background..."
-          : "Document uploaded and indexed successfully."
-      );
-
+      const body = new FormData();
+      body.append("title", title.trim());
+      body.append("file", file);
+      const data = await uploadDocument(body, setProgress);
+      if (!mountedRef.current) return;
+      setMessage(data?.message || "Document uploaded successfully.");
       setTitle("");
       setFile(null);
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-
+      if (fileInput.current) fileInput.current.value = "";
       setShowUpload(false);
-
       await loadDocuments();
-
-    } catch (err) {
-      setError(err.message);
+    } catch (uploadError) {
+      if (mountedRef.current) setError(uploadError.message);
     } finally {
-      setUploading(false);
+      uploadingRef.current = false;
+      if (mountedRef.current) setUploading(false);
     }
   }
 
-
-  // --------------------------------
-  // Delete
-  // --------------------------------
-
-  async function handleDelete(documentId) {
-
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this document?"
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
+  async function handleDelete(id) {
+    if (!window.confirm("Delete this document? This cannot be undone.")) return;
+    setDeletingId(id);
     setError("");
     setMessage("");
-
     try {
-
-      const response = await fetch(
-        `${API_URL}/api/documents/${documentId}`,
-        {
-          method: "DELETE",
-          credentials: "include",
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to delete document."
-        );
-      }
-
-      setMessage(
-        "Document deleted successfully."
-      );
-
-      await loadDocuments();
-
-    } catch (err) {
-      setError(err.message);
+      const data = await apiRequest(`/documents/${id}`, { method: "DELETE" });
+      setDocuments((items) => items.filter((item) => item.id !== id));
+      setMessage(data.message || "Document deleted successfully.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setDeletingId(null);
     }
   }
 
-
-  // --------------------------------
-  // View / download
-  // --------------------------------
-
-  function handleView(documentId) {
-
-    window.open(
-      `${API_URL}/api/documents/${documentId}/download`,
-      "_blank"
-    );
+  async function handleDownload(item) {
+    setDownloadingId(item.id);
+    setError("");
+    try { await downloadDocument(item); }
+    catch (downloadError) { setError(downloadError.message); }
+    finally { setDownloadingId(null); }
   }
-
-
-  // --------------------------------
-  // File size
-  // --------------------------------
-
-  function formatFileSize(bytes) {
-
-    if (!bytes) {
-      return "—";
-    }
-
-    if (bytes < 1024) {
-      return `${bytes} B`;
-    }
-
-    if (bytes < 1024 * 1024) {
-      return `${(
-        bytes / 1024
-      ).toFixed(1)} KB`;
-    }
-
-    return `${(
-      bytes /
-      (1024 * 1024)
-    ).toFixed(1)} MB`;
-  }
-
-
-  // --------------------------------
-  // Date
-  // --------------------------------
-
-  function formatDate(dateString) {
-
-    if (!dateString) {
-      return "—";
-    }
-
-    return new Date(
-      dateString
-    ).toLocaleDateString(
-      "en-IN",
-      {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }
-    );
-  }
-
 
   return (
     <div className="documents-page">
-
       <Navbar />
-
-
       <main className="documents-main">
-
-        {/* --------------------------------
-            Header
-        -------------------------------- */}
-
         <section className="documents-header">
-
           <div>
-
-            <p className="documents-eyebrow">
-              DOCUMENT LIBRARY
-            </p>
-
-            <h1>
-              Documents
-            </h1>
-
-            <p className="documents-subtitle">
-              {isAdmin
-                ? "Upload and manage institutional documents used by InternAssist."
-                : "Browse institutional documents available to you."
-              }
-            </p>
-
+            <p className="documents-eyebrow">KNOWLEDGE LIBRARY</p>
+            <h1>Documents</h1>
+            <p className="documents-subtitle">Browse and download the source material used by InternAssist.</p>
           </div>
-
-
-          {isAdmin && (
-            <button
-              className="upload-document-button"
-              onClick={() => {
-                setShowUpload(
-                  !showUpload
-                );
-
-                setError("");
-                setMessage("");
-              }}
-            >
-              <span>
-                +
-              </span>
-
-              Upload Document
-            </button>
-          )}
-
+          {isAdmin && <button className="upload-document-button" onClick={() => setShowUpload((value) => !value)}>{showUpload ? "Close upload" : "+ Upload document"}</button>}
         </section>
 
-
-        {/* --------------------------------
-            Messages
-        -------------------------------- */}
-
-        {message && (
-          <div className="document-message success">
-            {message}
-          </div>
-        )}
-
-        {error && (
-          <div className="document-message error">
-            {error}
-          </div>
-        )}
-
-
-        {/* --------------------------------
-            Upload form
-        -------------------------------- */}
+        {message && <div className="documents-message" role="status">{message}</div>}
+        {error && <div className="documents-error" role="alert">{error}</div>}
 
         {isAdmin && showUpload && (
-
-          <section className="upload-card">
-
+          <section className="upload-card" aria-labelledby="upload-title">
             <div className="upload-card-header">
-
-              <div>
-
-                <h2>
-                  Upload document
-                </h2>
-
-                <p>
-                  Add an institutional document to the
-                  InternAssist library.
-                </p>
-
-              </div>
-
+              <div><h2 id="upload-title">Upload a document</h2><p>PDF, DOCX, PPTX or TXT · up to 20 MB</p></div>
             </div>
-
-
-            <form
-              onSubmit={handleUpload}
-              className="upload-form"
-            >
-
-              <div className="form-field">
-
-                <label htmlFor="document-title">
-                  Document title
-                </label>
-
-                <input
-                  id="document-title"
-                  type="text"
-                  value={title}
-                  onChange={(e) =>
-                    setTitle(e.target.value)
-                  }
-                  placeholder="e.g. Internship Guidelines 2026"
-                />
-
-                <small>
-                  Leave blank to use the filename.
-                </small>
-
-              </div>
-
-
-              <div className="form-field">
-
-                <label htmlFor="document-file">
-                  Select file
-                </label>
-
-                <input
-                  ref={fileInputRef}
-                  id="document-file"
-                  type="file"
-                  accept=".pdf,.docx,.pptx,.txt"
-                  onChange={(e) =>
-                    setFile(
-                      e.target.files[0]
-                    )
-                  }
-                />
-
-                <small>
-                  PDF, DOCX, PPTX or TXT · Maximum 20 MB
-                </small>
-
-              </div>
-
-
-              {file && (
-
-                <div className="selected-file">
-
-                  <div className="selected-file-icon">
-                    {file.name
-                      .split(".")
-                      .pop()
-                      .toUpperCase()}
-                  </div>
-
-                  <div>
-
-                    <strong>
-                      {file.name}
-                    </strong>
-
-                    <p>
-                      {formatFileSize(
-                        file.size
-                      )}
-                    </p>
-
-                  </div>
-
-                </div>
-
-              )}
-
-
+            <form className="upload-form" onSubmit={handleUpload}>
+              <label htmlFor="document-title">Document title <span>(optional)</span></label>
+              <input id="document-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Defaults to the file name" disabled={uploading} />
+              <label htmlFor="document-file">File</label>
+              <input ref={fileInput} id="document-file" type="file" accept=".pdf,.docx,.pptx,.txt" onChange={handleFileChange} disabled={uploading} required />
+              {file && <div className="selected-file"><div className="selected-file-icon">{file.name.split(".").pop().toUpperCase()}</div><div><strong>{file.name}</strong><p>{formatFileSize(file.size)}</p></div></div>}
+              {uploading && <div className="upload-progress" aria-live="polite"><div className="upload-progress-label"><span>Uploading…</span><strong>{progress}%</strong></div><progress max="100" value={progress}>{progress}%</progress></div>}
               <div className="upload-form-actions">
-
-                <button
-                  type="button"
-                  className="cancel-upload-button"
-                  onClick={() => {
-                    setShowUpload(false);
-                    setTitle("");
-                    setFile(null);
-                    setError("");
-                  }}
-                >
-                  Cancel
-                </button>
-
-                <button
-                  type="submit"
-                  className="confirm-upload-button"
-                  disabled={uploading}
-                >
-                  {uploading
-                    ? "Uploading..."
-                    : "Upload Document"
-                  }
-                </button>
-
+                <button type="button" className="cancel-upload-button" disabled={uploading} onClick={() => setShowUpload(false)}>Cancel</button>
+                <button type="submit" className="confirm-upload-button" disabled={uploading || !file}>{uploading ? "Uploading…" : "Upload document"}</button>
               </div>
-
             </form>
-
           </section>
-
         )}
 
-
-        {/* --------------------------------
-            Documents list
-        -------------------------------- */}
-
         <section className="documents-section">
-
-          <div className="documents-section-header">
-
-            <div>
-
-              <h2>
-                {isAdmin
-                  ? "All documents"
-                  : "Available documents"
-                }
-              </h2>
-
-              <p>
-                {documents.length}{" "}
-                {documents.length === 1
-                  ? "document"
-                  : "documents"
-                }
-              </p>
-
-            </div>
-
-          </div>
-
-
-          {loading ? (
-
-            <div className="documents-empty">
-              Loading documents...
-            </div>
-
-          ) : documents.length === 0 ? (
-
-            <div className="documents-empty">
-
-              <div className="empty-icon">
-                □
-              </div>
-
-              <h3>
-                No documents yet
-              </h3>
-
-              <p>
-                {isAdmin
-                  ? "Upload the first institutional document to get started."
-                  : "No institutional documents are currently available."
-                }
-              </p>
-
-              {isAdmin && (
-                <button
-                  className="empty-upload-button"
-                  onClick={() =>
-                    setShowUpload(true)
-                  }
-                >
-                  Upload Document
-                </button>
-              )}
-
-            </div>
-
+          <div className="documents-section-header"><div><h2>{isAdmin ? "All documents" : "Available documents"}</h2><p>{documents.length} {documents.length === 1 ? "document" : "documents"}</p></div><button className="documents-refresh" onClick={loadDocuments} disabled={loading}>Refresh</button></div>
+          {loading ? <div className="documents-empty" role="status">Loading documents…</div> : documents.length === 0 ? (
+            <div className="documents-empty"><div className="empty-icon">□</div><h3>No documents yet</h3><p>{isAdmin ? "Upload the first institutional document to get started." : "No institutional documents are currently available."}</p></div>
           ) : (
-
             <div className="documents-table-wrapper">
-
               <table className="documents-table">
-
-                <thead>
-
-                  <tr>
-
-                    <th>
-                      DOCUMENT
-                    </th>
-
-                    <th>
-                      TYPE
-                    </th>
-
-                    <th>
-                      SIZE
-                    </th>
-
-                    <th>
-                      UPLOADED
-                    </th>
-
-                    {isAdmin && (
-                      <th>
-                        UPLOADED BY
-                      </th>
-                    )}
-
-                    <th>
-                      STATUS
-                    </th>
-
-                    <th>
-                      ACTION
-                    </th>
-
+                <thead><tr><th>DOCUMENT</th><th>TYPE</th><th>SIZE</th><th>UPLOADED</th>{isAdmin && <th>UPLOADED BY</th>}<th>STATUS</th><th>ACTIONS</th></tr></thead>
+                <tbody>{documents.map((item) => (
+                  <tr key={item.id}>
+                    <td data-label="Document"><div className="document-name-cell"><div className="document-type-icon">{item.file_type}</div><div><strong>{item.title}</strong><span>{item.filename}</span></div></div></td>
+                    <td data-label="Type"><span className="file-type">{item.file_type}</span></td>
+                    <td data-label="Size">{formatFileSize(item.file_size)}</td>
+                    <td data-label="Uploaded">{formatDate(item.uploaded_at)}</td>
+                    {isAdmin && <td data-label="Uploaded by">{item.uploaded_by || "—"}</td>}
+                    <td data-label="Status"><span className="document-status">{item.status}</span></td>
+                    <td data-label="Actions"><div className="document-actions"><button className="view-document-button" onClick={() => handleDownload(item)} disabled={downloadingId === item.id}>{downloadingId === item.id ? "Downloading…" : "Download"}</button>{isAdmin && <button className="delete-document-button" onClick={() => handleDelete(item.id)} disabled={deletingId === item.id}>{deletingId === item.id ? "Deleting…" : "Delete"}</button>}</div></td>
                   </tr>
-
-                </thead>
-
-
-                <tbody>
-
-                  {documents.map(
-                    (document) => (
-
-                      <tr
-                        key={document.id}
-                      >
-
-                        <td>
-
-                          <div className="document-name-cell">
-
-                            <div className="document-type-icon">
-                              {document.file_type}
-                            </div>
-
-                            <div>
-
-                              <strong>
-                                {document.title}
-                              </strong>
-
-                              <span>
-                                {document.filename}
-                              </span>
-
-                            </div>
-
-                          </div>
-
-                        </td>
-
-
-                        <td>
-                          <span className="file-type">
-                            {document.file_type}
-                          </span>
-                        </td>
-
-
-                        <td>
-                          {formatFileSize(
-                            document.file_size
-                          )}
-                        </td>
-
-
-                        <td>
-                          {formatDate(
-                            document.uploaded_at
-                          )}
-                        </td>
-
-
-                        {isAdmin && (
-                          <td>
-                            {document.uploaded_by || "—"}
-                          </td>
-                        )}
-
-
-                        <td>
-
-                          <span className="document-status">
-                            {document.status}
-                          </span>
-
-                        </td>
-
-
-                        <td>
-
-                          <div className="document-actions">
-
-                            <button
-                              className="view-document-button"
-                              onClick={() =>
-                                handleView(
-                                  document.id
-                                )
-                              }
-                            >
-                              View
-                            </button>
-
-
-                            {isAdmin && (
-
-                              <button
-                                className="delete-document-button"
-                                onClick={() =>
-                                  handleDelete(
-                                    document.id
-                                  )
-                                }
-                              >
-                                Delete
-                              </button>
-
-                            )}
-
-                          </div>
-
-                        </td>
-
-                      </tr>
-
-                    )
-                  )}
-
-                </tbody>
-
+                ))}</tbody>
               </table>
-
             </div>
-
           )}
-
         </section>
-
       </main>
-
     </div>
   );
 }

@@ -7,6 +7,8 @@ _BOOT_STARTED = _time.perf_counter()
 _faulthandler.dump_traceback_later(60, exit=False)
 
 from contextlib import contextmanager
+import json
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,6 +28,8 @@ from services.vectorstore import (
     add_chunks,
     search,
     delete_document_chunks,
+    get_document_chunks,
+    restore_document_chunks,
     VectorStoreUnavailable,
     indexed_document_ids
 )
@@ -45,6 +49,14 @@ from services.redis_service import (
     save_chat_history,
     delete_chat_history
 )
+
+
+class AIConfigurationError(RuntimeError):
+    """Raised when the configured AI provider cannot be initialized."""
+
+
+class AIUpstreamError(RuntimeError):
+    """Raised when the configured AI provider fails during generation."""
 
 
 app = Flask(__name__)
@@ -314,7 +326,7 @@ def environment_snapshot():
 
 def is_production():
     flask_env = os.getenv("FLASK_ENV", "").strip().lower()
-    app_env = os.getenv("ENVIRONMENT", "").strip().lower()
+    app_env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).strip().lower()
     return flask_env == "production" or app_env == "production"
 
 
@@ -359,8 +371,10 @@ def validate_production_config(application):
 
 # CORS configuration
 cors_origins_env = os.getenv(
+    "FRONTEND_ORIGINS", os.getenv(
     "CORS_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+    )
 )
 cors_origins = [
     origin.strip()
@@ -371,7 +385,8 @@ cors_origins = [
 CORS(
     app,
     origins=cors_origins,
-    supports_credentials=True
+    supports_credentials=True,
+    allow_headers=["Content-Type", "X-CSRF-Token"]
 )
 
 
@@ -410,7 +425,7 @@ os.makedirs(
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_UPLOAD_BYTES", 20 * 1024 * 1024))
 
 ALLOWED_EXTENSIONS = {
     "pdf",
@@ -459,6 +474,22 @@ Session(app)
 db.init_app(app)
 
 
+@app.before_request
+def validate_csrf():
+    """Require a session-bound token for every state-changing API request."""
+    if app.config.get("TESTING") and not app.config.get("TEST_CSRF_ENABLED"):
+        return None
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+    expected = session.get("csrf_token")
+    supplied = request.headers.get("X-CSRF-Token", "")
+    if not expected or not supplied or not secrets.compare_digest(expected, supplied):
+        return jsonify({"error": "Invalid or missing CSRF token."}), 403
+    return None
+
+
 def create_default_admin():
     admin_email = os.getenv("ADMIN_EMAIL") or os.getenv("DEFAULT_ADMIN_EMAIL")
     admin_password = os.getenv("ADMIN_PASSWORD") or os.getenv("DEFAULT_ADMIN_PASSWORD")
@@ -500,7 +531,11 @@ def get_logged_in_user():
     if not user_id:
         return None
 
-    return db.session.get(User, user_id)
+    user = db.session.get(User, user_id)
+    if not user or not user.active:
+        session.clear()
+        return None
+    return user
 
 def allowed_file(filename):
     if not filename:
@@ -531,9 +566,59 @@ def _json_body():
 
 def _str_field(data, key, default=""):
     value = data.get(key, default)
-    if value is None:
-        return default
-    return value if isinstance(value, str) else str(value)
+    return value if isinstance(value, str) else default
+
+
+def _ordered_messages(conversation_id):
+    return (Message.query.filter_by(conversation_id=conversation_id)
+            .order_by(Message.id.asc()).all())
+
+
+def _cache_conversation(conversation_id):
+    history = [message.to_dict() for message in _ordered_messages(conversation_id)]
+    try:
+        save_chat_history(conversation_id, history)
+    except Exception:
+        app.logger.warning("Redis chat cache could not be updated for conversation %s", conversation_id)
+    return history
+
+
+def _valid_retrieved_chunks(chunks):
+    valid = []
+    for chunk in chunks:
+        document_id = _coerce_doc_id(chunk.get("document_id"))
+        document = db.session.get(Document, document_id) if document_id is not None else None
+        if document:
+            valid.append((chunk, document))
+    return valid
+
+
+def _citations_and_context(chunks):
+    citations = []
+    seen = set()
+    context_blocks = []
+    for chunk, document in _valid_retrieved_chunks(chunks):
+        page_number = chunk.get("page_number")
+        source = document.filename
+        if page_number:
+            source = f"{source}, Page {page_number}"
+        context_blocks.append(f"[Source: {source}]\n{chunk['text']}")
+        key = (document.id, page_number)
+        if key not in seen:
+            seen.add(key)
+            citations.append({
+                "document_id": document.id,
+                "document_name": document.filename,
+                "page_number": page_number,
+            })
+    return citations, "\n\n".join(context_blocks)
+
+
+@app.route("/api/auth/csrf", methods=["GET"])
+def csrf_token():
+    token = session.get("csrf_token") or secrets.token_urlsafe(32)
+    session["csrf_token"] = token
+    return jsonify({"csrf_token": token})
 
 
 # Register
@@ -552,6 +637,9 @@ def register():
         return jsonify({
             "error": "Name, email and password are required."
         }), 400
+
+    if len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters long."}), 400
 
     if role not in ["student", "faculty"]:
         return jsonify({
@@ -627,11 +715,14 @@ def login():
 
 
 
+    session.clear()
     session["user_id"] = user.id
+    session["csrf_token"] = secrets.token_urlsafe(32)
 
     return jsonify({
         "message": "Login successful.",
-        "user": user.to_dict()
+        "user": user.to_dict(),
+        "csrf_token": session["csrf_token"]
     }), 200
 
 
@@ -863,20 +954,31 @@ def delete_document(document_id):
         document.stored_filename
     )
 
+    quarantine_path = f"{file_path}.deleting"
+    chunks = []
+    committed = False
     try:
-        delete_document_chunks(document_id)
-
+        chunks = get_document_chunks(document_id)
         if os.path.exists(file_path):
-            os.remove(file_path)
-
+            os.replace(file_path, quarantine_path)
+        delete_document_chunks(document_id)
         db.session.delete(document)
         db.session.commit()
-
+        committed = True
+        if os.path.exists(quarantine_path):
+            os.remove(quarantine_path)
     except Exception:
         db.session.rollback()
         app.logger.exception("Document deletion failed.")
+        if not committed:
+            try:
+                restore_document_chunks(chunks)
+                if os.path.exists(quarantine_path):
+                    os.replace(quarantine_path, file_path)
+            except Exception:
+                app.logger.exception("Document deletion rollback failed.")
         return jsonify({
-            "error": "Document deletion failed."
+            "error": "The document could not be deleted consistently."
         }), 500
 
     return jsonify({
@@ -1155,19 +1257,8 @@ def get_conversation(conversation_id):
             "error": "Conversation not found."
         }), 404
 
-    history = get_chat_history(conversation.id)
-
-    if history is None or not history or len(history) != len(conversation.messages):
-        history = [
-            message.to_dict()
-            for message in conversation.messages
-        ]
-
-        if history:
-            save_chat_history(
-                conversation.id,
-                history
-            )
+    # SQLite/PostgreSQL is authoritative; Redis is only an optional cache.
+    history = _cache_conversation(conversation.id)
 
     return jsonify({
         "conversation": conversation.to_dict(),
@@ -1206,9 +1297,9 @@ def add_message(conversation_id):
     role = _str_field(data, "role").strip()
     content = _str_field(data, "content").strip()
 
-    if role not in ["user", "assistant"]:
+    if role != "user":
         return jsonify({
-            "error": "Invalid message role."
+            "error": "Only user messages may be submitted by clients."
         }), 400
 
     if not content:
@@ -1257,6 +1348,98 @@ def add_message(conversation_id):
         "message": "Message saved successfully.",
         "data": message.to_dict()
     }), 201
+
+
+@app.route(
+    "/api/conversations/<int:conversation_id>/ask",
+    methods=["POST"]
+)
+def ask_in_conversation(conversation_id):
+    """Own the complete chat turn to prevent duplicate/racing client requests."""
+    user = get_logged_in_user()
+    if not user:
+        return jsonify({"error": "Authentication required."}), 401
+
+    conversation = Conversation.query.filter_by(
+        id=conversation_id,
+        user_id=user.id
+    ).first()
+    if not conversation:
+        return jsonify({"error": "Conversation not found."}), 404
+
+    data = _json_body()
+    question = _str_field(data, "question").strip()
+    if not question:
+        return jsonify({"error": "Question is required."}), 400
+
+    previous = [message.to_dict() for message in _ordered_messages(conversation.id)]
+    user_message = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=question
+    )
+    conversation.updated_at = utcnow_naive()
+    db.session.add(user_message)
+    db.session.commit()
+    _cache_conversation(conversation.id)
+
+    try:
+        retrieved = search(_build_retrieval_query(question, previous[-6:]))
+    except VectorStoreUnavailable:
+        return jsonify({
+            "error": "Document search is temporarily unavailable. Please retry shortly.",
+            "conversation": conversation.to_dict(),
+            "messages": _cache_conversation(conversation.id),
+        }), 503
+
+    citations, context = _citations_and_context(retrieved)
+    if context:
+        if not os.getenv("GEMINI_API_KEY") and not app.config.get("TESTING"):
+            return jsonify({
+                "error": "The AI service is not configured.",
+                "conversation": conversation.to_dict(),
+                "messages": _cache_conversation(conversation.id),
+            }), 503
+        try:
+            answer = ask_gemini(context, question, previous[-6:])
+        except AIConfigurationError as exc:
+            return jsonify({
+                "error": str(exc),
+                "conversation": conversation.to_dict(),
+                "messages": _cache_conversation(conversation.id),
+            }), 503
+        except (AIUpstreamError, Exception) as exc:
+            app.logger.exception("Conversation AI generation failed")
+            return jsonify({
+                "error": str(exc) if isinstance(exc, AIUpstreamError) else "The AI service is temporarily unavailable. Please try again.",
+                "conversation": conversation.to_dict(),
+                "messages": _cache_conversation(conversation.id),
+            }), 502
+        if not answer or answer.strip() == "Gemini is temporarily unavailable. Please try again.":
+            return jsonify({
+                "error": "The AI service is temporarily unavailable. Please try again.",
+                "conversation": conversation.to_dict(),
+                "messages": _cache_conversation(conversation.id),
+            }), 502
+    else:
+        answer = "I don't have any relevant documents to answer this question yet."
+        citations = []
+
+    assistant = Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=answer,
+        citations_json=json.dumps(citations),
+    )
+    conversation.updated_at = utcnow_naive()
+    db.session.add(assistant)
+    db.session.commit()
+
+    return jsonify({
+        "conversation": conversation.to_dict(),
+        "message": assistant.to_dict(),
+        "messages": _cache_conversation(conversation.id),
+    }), 200
 
 
 
@@ -1480,6 +1663,9 @@ def ask():
         return jsonify({"status": "retrieval_failed",
                         "error": "Document search is temporarily unavailable. Please retry shortly."}), 503
 
+    # Never answer from chunks whose authoritative document row was deleted.
+    retrieved_chunks = [chunk for chunk, _document in _valid_retrieved_chunks(retrieved_chunks)]
+
     if not retrieved_chunks:
         app.logger.info(
             "[ASK] Total request completed in %.2fs",
@@ -1544,6 +1730,8 @@ def ask():
 
     with _request_watchdog("Gemini generation", timeout_seconds=45.0):
         try:
+            if not os.getenv("GEMINI_API_KEY") and not app.config.get("TESTING"):
+                return jsonify({"error": "The AI service is not configured."}), 503
             if history:
                 answer = ask_gemini(
                     context=context,
@@ -1557,7 +1745,14 @@ def ask():
                 )
         except Exception:
             app.logger.exception("[ASK] Gemini generation failed")
-            answer = "Gemini is temporarily unavailable. Please try again."
+            return jsonify({
+                "error": "The AI service is temporarily unavailable. Please try again."
+            }), 502
+
+    if not answer or answer.strip() == "Gemini is temporarily unavailable. Please try again.":
+        return jsonify({
+            "error": "The AI service is temporarily unavailable. Please try again."
+        }), 502
 
     app.logger.info(
         "[ASK] Gemini generation completed in %.2fs",

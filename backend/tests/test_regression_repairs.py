@@ -225,10 +225,13 @@ def test_ask_with_conversation_history_and_source_context(client):
         f"/api/conversations/{conv_id}/messages",
         json={"role": "user", "content": "What is the minimum internship duration?"},
     )
-    client.post(
-        f"/api/conversations/{conv_id}/messages",
-        json={"role": "assistant", "content": "The minimum duration is 8 weeks."},
-    )
+    with app.app_context():
+        db.session.add(Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content="The minimum duration is 8 weeks.",
+        ))
+        db.session.commit()
     client.post(
         f"/api/conversations/{conv_id}/messages",
         json={"role": "user", "content": "Are log books mandatory?"},
@@ -264,7 +267,7 @@ def test_ask_with_conversation_history_and_source_context(client):
     # Short follow-up query enriched with previous user question
     assert "minimum internship duration" in mock_search.call_args[0][0]
     assert data["citations"][0]["document_name"] == "sop.pdf"
-    assert data["citations"][1]["document_name"] == "Unknown document"
+    assert len(data["citations"]) == 1
 
 
 def test_index_recovery_handles_corrupt_doc_without_blocking_valid_doc(client, monkeypatch):
@@ -322,6 +325,16 @@ def test_index_recovery_handles_corrupt_doc_without_blocking_valid_doc(client, m
 
 def test_ask_filters_error_history_and_expands_referential_followup(client):
     _register_and_login(client, "quality@example.com", role="student")
+    with app.app_context():
+        user = User.query.filter_by(email="quality@example.com").one()
+        document = Document(
+            title="Stipend Policy", filename="stipend.pdf",
+            stored_filename="stipend.pdf", file_type="PDF", file_size=10,
+            status="indexed", uploaded_by_id=user.id,
+        )
+        db.session.add(document)
+        db.session.commit()
+        document_id = document.id
     conv_resp = client.post("/api/conversations", json={"title": "Quality test"})
     conv_id = conv_resp.get_json()["conversation"]["id"]
 
@@ -329,10 +342,13 @@ def test_ask_filters_error_history_and_expands_referential_followup(client):
         f"/api/conversations/{conv_id}/messages",
         json={"role": "user", "content": "What is the summer internship stipend?"},
     )
-    client.post(
-        f"/api/conversations/{conv_id}/messages",
-        json={"role": "assistant", "content": "Gemini is temporarily unavailable. Please try again."},
-    )
+    with app.app_context():
+        db.session.add(Message(
+            conversation_id=conv_id,
+            role="assistant",
+            content="Gemini is temporarily unavailable. Please try again.",
+        ))
+        db.session.commit()
 
     captured = {}
 
@@ -342,7 +358,7 @@ def test_ask_filters_error_history_and_expands_referential_followup(client):
         return "You need an offer letter and bank form."
 
     fake_chunks = [
-        {"text": "Submit your offer letter for stipend processing.", "document_id": 1, "page_number": 2, "distance": 0.1}
+        {"text": "Submit your offer letter for stipend processing.", "document_id": document_id, "page_number": 2, "distance": 0.1}
     ]
     followup = "What documents do I need to submit for that?"
     with patch("app.search", return_value=fake_chunks) as mock_search, \
@@ -356,5 +372,3 @@ def test_ask_filters_error_history_and_expands_referential_followup(client):
     assert "summer internship stipend" in mock_search.call_args[0][0]
     assert captured["question"] == followup
     assert captured["history"] == [{"role": "user", "content": "What is the summer internship stipend?"}]
-
-

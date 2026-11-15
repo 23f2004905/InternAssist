@@ -53,14 +53,14 @@ def test_redis():
 def get_chat_history(conversation_id):
     """Retrieve chat history from Redis.
 
-    Returns a list of messages if found or empty on cache miss.
-    Returns None if Redis is unavailable or an error occurs.
+    Returns a list of messages if found. Returns None on a cache miss or when
+    Redis is unavailable, so callers always rebuild from the database.
     """
     key = f"chat:{conversation_id}"
     try:
         data = redis_client.get(key)
         if not data:
-            return []
+            return None
         return json.loads(data)
     except (redis.RedisError, OSError, Exception) as exc:
         logger.warning(

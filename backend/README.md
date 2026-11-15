@@ -84,8 +84,10 @@ git diff --check
 | `REDIS_TIMEOUT` | `2.0` | Socket read/write timeout in seconds. |
 | `REDIS_CHAT_TTL` | `3600` | Cache time-to-live for conversation history in seconds. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated list of allowed frontend origins. |
+| `FRONTEND_ORIGINS` | *(None)* | Preferred comma-separated frontend origins; takes precedence over `CORS_ORIGINS`. |
 | `UPLOAD_FOLDER` | `backend/uploads` | Path for storing uploaded documents (PDF, DOCX, PPTX, TXT). |
 | `CHROMA_DB_PATH` | `chroma_db` | Persistent directory for ChromaDB vector embeddings. |
+| `MAX_UPLOAD_BYTES` | `20971520` | Maximum accepted upload size in bytes. |
 | `GEMINI_API_KEY` | *(None)* | Google Gemini API key for RAG assistant answers. |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name (e.g. `gemini-2.5-flash`, `gemini-2.0-flash`). |
 | `GEMINI_REQUEST_TIMEOUT` | *(None)* | Request timeout in seconds or milliseconds for Gemini API requests. |
@@ -143,3 +145,6 @@ this migration do not have recoverable bytes in the database: re-upload those fi
 
 Rollback: `DROP TABLE IF EXISTS document_files;` (this removes stored document bytes, so
 export/back up the table before rolling back). Keep the table for normal application rollback.
+
+Then apply `migrations/002_message_citations.sql` to add structured citations to existing
+message rows. Fresh databases receive both structures automatically through `db.create_all()`.
