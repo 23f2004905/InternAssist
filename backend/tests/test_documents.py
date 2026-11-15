@@ -55,9 +55,9 @@ def test_upload_cleanup_download_and_vector_delete(client, monkeypatch, tmp_path
     monkeypatch.setattr(app_module, "get_document_chunks", lambda document_id: [])
     monkeypatch.setattr(app_module, "delete_document_chunks", lambda document_id: deleted.append(document_id))
     response = client.post("/api/documents", data={"file": (io.BytesIO(b"policy text"), "policy.txt")}, headers={"X-CSRF-Token": token})
-    assert response.status_code == 201
+    assert response.status_code == 202
     item = response.get_json()["document"]
-    assert indexed == [item["id"]]
+    assert indexed == []
     assert client.get(f"/api/documents/{item['id']}/download").status_code == 200
     assert client.delete(f"/api/documents/{item['id']}", headers={"X-CSRF-Token": token}).status_code == 200
     assert deleted == [item["id"]]
@@ -65,15 +65,15 @@ def test_upload_cleanup_download_and_vector_delete(client, monkeypatch, tmp_path
         assert db.session.get(Document, item["id"]) is None
 
 
-def test_failed_indexing_cleans_file_and_record(client, monkeypatch):
+def test_upload_is_durable_when_background_indexing_is_unavailable(client, monkeypatch):
     create_user("admin@example.com", "admin")
     _, token = login(client, "admin@example.com")
     monkeypatch.setattr(app_module, "add_chunks", lambda *_: (_ for _ in ()).throw(RuntimeError("index down")))
     response = client.post("/api/documents", data={"file": (io.BytesIO(b"policy text"), "policy.txt")}, headers={"X-CSRF-Token": token})
-    assert response.status_code == 500
+    assert response.status_code == 202
     with app.app_context():
-        assert Document.query.count() == 0
-    assert not list(Path(app.config["UPLOAD_FOLDER"]).glob("*.txt"))
+        document = Document.query.one()
+        assert document.status == "pending"
 
 
 def test_page_less_chunk_omits_null_chroma_metadata(monkeypatch):
@@ -82,5 +82,6 @@ def test_page_less_chunk_omits_null_chroma_metadata(monkeypatch):
         def add(self, **kwargs):
             captured.update(kwargs)
     monkeypatch.setattr(vectorstore, "_get_collection", lambda: Collection())
+    monkeypatch.setattr(vectorstore, "_embed_texts", lambda texts, task_type: [[0.0] * 768 for _ in texts])
     vectorstore.add_chunks([{"text": "TXT text", "page_number": None}], 42)
     assert captured["metadatas"] == [{"document_id": 42}]

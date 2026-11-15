@@ -35,14 +35,15 @@ python -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 pip install -r backend/requirements.txt
 cd backend
-flask --app app db upgrade
+# Existing PostgreSQL deployments: apply migrations/001_document_files.sql,
+# then migrations/002_message_citations.sql using your database SQL console.
 cd ..
 python backend/app.py
 ```
 
-The backend runs at `http://localhost:5001`. Configure `SECRET_KEY`, `FRONTEND_ORIGINS`, and `GEMINI_API_KEY` in `backend/.env`; HTTPS production deployments must use `SESSION_COOKIE_SECURE=true`. `REDIS_URL` is optional and is only a cache—SQLite is always the source of truth for ordered messages and citations. A default administrator is created only when both `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` are explicitly set.
+The backend runs at `http://localhost:5001`. Configure `SECRET_KEY`, `FRONTEND_ORIGINS`, and `GEMINI_API_KEY` in `backend/.env`; HTTPS production deployments must use `SESSION_COOKIE_SECURE=true`. `REDIS_URL` is optional and is only a cache—the relational database is always the source of truth for ordered messages and citations. A default administrator is created only when both `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` (or `ADMIN_EMAIL` and `ADMIN_PASSWORD`) are explicitly set.
 
-Uploads support validated PDF, DOCX, PPTX, and UTF-8 TXT files up to `MAX_UPLOAD_BYTES` (20 MiB by default). Failed extraction or indexing is rolled back. Deletion removes the stored file, database row, and all associated vector chunks.
+Uploads support validated PDF, DOCX, PPTX, and TXT files up to `MAX_UPLOAD_BYTES` (20 MiB by default). Original bytes are committed to the database before background indexing, so an indexing outage cannot lose an upload. Deletion removes the cached file, database row, durable bytes, and associated vector chunks with rollback protection.
 
 ### Frontend
 

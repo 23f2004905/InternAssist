@@ -1,3 +1,0 @@
-Single-database migration repository for InternAssist.
-
-Run from backend with: flask --app app db upgrade

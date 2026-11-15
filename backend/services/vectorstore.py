@@ -1,87 +1,308 @@
+import logging
 import os
+import threading
+import time
+from itertools import islice
 from uuid import uuid4
 
-import chromadb
+logger = logging.getLogger("app.vectorstore")
 
+_configured_path = os.getenv("CHROMA_DB_PATH")
+
+if not _configured_path or not _configured_path.strip():
+    CHROMA_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "chroma_db")
+    CHROMA_DB_PATH = os.path.abspath(CHROMA_DB_PATH)
+elif not os.path.isabs(_configured_path):
+    CHROMA_DB_PATH = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", _configured_path)
+    )
+else:
+    CHROMA_DB_PATH = _configured_path
+
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
+COLLECTION_NAME = "documents_gemini_001_768"
+MAX_EMBEDDING_BATCH_SIZE = 16
+
+_init_lock = threading.RLock()
 _client = None
 _collection = None
+_owner_pid = None
+
+
+class VectorStoreUnavailable(RuntimeError):
+    """Raised when vector storage or retrieval is unavailable."""
+
+
+def _embed_texts(texts, task_type):
+    """Generate embeddings through the shared Gemini API client."""
+    if not texts:
+        return []
+
+    from google.genai import types
+    from services.gemini_retry import GenerationError, generate_with_fallback
+    from services.llm import describe_gemini_error, get_gemini_client
+
+    gemini_client = get_gemini_client()
+
+    if not gemini_client:
+        raise VectorStoreUnavailable("Gemini embedding service is unavailable")
+
+    try:
+        response = generate_with_fallback(
+            lambda selected_model: gemini_client.models.embed_content(
+                model=selected_model,
+                contents=texts,
+                config=types.EmbedContentConfig(
+                    task_type=task_type,
+                    output_dimensionality=EMBEDDING_DIMENSIONS,
+                ),
+            ),
+            primary_model=EMBEDDING_MODEL,
+            fallback_model="",
+            sleep=time.sleep,
+            error_formatter=describe_gemini_error,
+        )
+    except GenerationError as exc:
+        raise VectorStoreUnavailable("Gemini embedding service is unavailable") from exc
+    except Exception as exc:
+        logger.warning(
+            "[VECTOR] Unexpected embedding error: %s",
+            describe_gemini_error(exc),
+        )
+        raise VectorStoreUnavailable("Gemini embedding service is unavailable") from exc
+
+    embeddings = getattr(response, "embeddings", None)
+
+    if not embeddings or len(embeddings) != len(texts):
+        raise VectorStoreUnavailable("Gemini returned an invalid embedding response")
+
+    vectors = []
+
+    for embedding in embeddings:
+        values = getattr(embedding, "values", None)
+
+        if not values or len(values) != EMBEDDING_DIMENSIONS:
+            raise VectorStoreUnavailable(
+                "Gemini returned an unexpected embedding dimension"
+            )
+
+        vectors.append([float(value) for value in values])
+
+    return vectors
 
 
 def _get_collection():
-    global _client, _collection
-    if _collection is None:
-        path = os.getenv("CHROMA_DB_PATH", os.path.join(os.path.dirname(__file__), "..", "chroma_db"))
-        _client = chromadb.PersistentClient(path=os.path.abspath(path))
-        _collection = _client.get_or_create_collection(name="documents")
-    return _collection
+    """Connect to Chroma lazily and protect against unsafe process forks."""
+    global _client, _collection, _owner_pid
+
+    pid = os.getpid()
+
+    if _collection is not None:
+        if _owner_pid != pid:
+            raise RuntimeError("ChromaDB client was created before a process fork")
+        return _collection
+
+    with _init_lock:
+        if _collection is not None:
+            if _owner_pid != pid:
+                raise RuntimeError("ChromaDB client was created before a process fork")
+            return _collection
+
+        import chromadb
+
+        started = time.perf_counter()
+        os.makedirs(CHROMA_DB_PATH, exist_ok=True)
+        _client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+
+        _collection = _client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=None,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        _owner_pid = pid
+
+        logger.info(
+            "[VECTOR] Gemini ChromaDB collection ready in %.2fs "
+            "(pid=%s, collection=%s)",
+            time.perf_counter() - started,
+            pid,
+            COLLECTION_NAME,
+        )
+
+        return _collection
 
 
-def add_chunks(chunks, document_id):
-    ids = [str(uuid4()) for _ in chunks]
+class _LazyCollection:
+    """Drop-in collection proxy that connects on first use."""
 
-    documents = [chunk["text"] for chunk in chunks]
+    def __getattr__(self, name):
+        return getattr(_get_collection(), name)
 
-    metadatas = []
-    for chunk in chunks:
-        metadata = {"document_id": document_id}
-        if chunk.get("page_number") is not None:
-            metadata["page_number"] = chunk["page_number"]
-        metadatas.append(metadata)
 
-    _get_collection().add(
-        documents=documents,
-        ids=ids,
-        metadatas=metadatas
-    )
+collection = _LazyCollection()
+
+
+def add_chunks(chunks, document_id, batch_size=64):
+    """Embed and insert document chunks in bounded batches."""
+    target = _get_collection()
+    batch_size = max(1, min(int(batch_size), MAX_EMBEDDING_BATCH_SIZE))
+
+    iterator = iter(chunks)
+    inserted = 0
+
+    while True:
+        batch = list(islice(iterator, batch_size))
+
+        if not batch:
+            break
+
+        texts = [chunk["text"] for chunk in batch]
+
+        embeddings = _embed_texts(
+            texts,
+            task_type="RETRIEVAL_DOCUMENT",
+        )
+
+        metadatas = []
+        for chunk in batch:
+            metadata = {"document_id": document_id}
+            if chunk.get("page_number") is not None:
+                metadata["page_number"] = int(chunk["page_number"])
+            metadatas.append(metadata)
+
+        target.add(
+            documents=texts,
+            embeddings=embeddings,
+            ids=[str(uuid4()) for _ in batch],
+            metadatas=metadatas,
+        )
+
+        inserted += len(batch)
+
+    return inserted
 
 
 def search(query, n_results=8):
-    collection = _get_collection()
-    if collection.count() == 0:
+    """Retrieve relevant chunks using Gemini query embeddings."""
+    if not query or not query.strip():
         return []
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results
-    )
+    try:
+        query_embedding = _embed_texts(
+            [query],
+            task_type="RETRIEVAL_QUERY",
+        )[0]
 
-    if not results["documents"] or not results["documents"][0]:
-        return []
-
-    retrieved_chunks = []
-
-    for i, document in enumerate(results["documents"][0]):
-        metadata = results["metadatas"][0][i]
-
-        retrieved_chunks.append({
-            "text": document,
-            "document_id": metadata.get("document_id"),
-            "page_number": metadata.get("page_number")
-        })
-
-    return retrieved_chunks
-
-
-def get_document_chunks(document_id):
-    results = _get_collection().get(where={"document_id": document_id}, include=["documents", "metadatas"])
-    return [
-        {"id": chunk_id, "text": text, "metadata": metadata}
-        for chunk_id, text, metadata in zip(
-            results.get("ids", []), results.get("documents", []), results.get("metadatas", [])
+        results = _get_collection().query(
+            query_embeddings=[query_embedding],
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"],
         )
-    ]
+
+        documents = (results.get("documents") or [[]])[0] or []
+        metadatas = (results.get("metadatas") or [[]])[0] or []
+        distances = (results.get("distances") or [[]])[0] or []
+
+        retrieved_chunks = []
+
+        for text, metadata, distance in zip(documents, metadatas, distances):
+            if not text or not str(text).strip():
+                continue
+            metadata = metadata or {}
+
+            retrieved_chunks.append(
+                {
+                    "text": text,
+                    "document_id": metadata.get("document_id"),
+                    "page_number": metadata.get("page_number"),
+                    "distance": distance,
+                }
+            )
+
+        return retrieved_chunks
+
+    except VectorStoreUnavailable:
+        raise
+    except Exception as exc:
+        from services.llm import describe_gemini_error
+
+        logger.error("Vector search failed: %s", describe_gemini_error(exc))
+        raise VectorStoreUnavailable(
+            "Vector retrieval is temporarily unavailable"
+        ) from exc
 
 
 def delete_document_chunks(document_id):
-    collection = _get_collection()
-    collection.delete(where={"document_id": document_id})
+    """Delete all chunks belonging to a document."""
+    try:
+        _get_collection().delete(where={"document_id": document_id})
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete chunks for document %s: %s",
+            document_id,
+            type(exc).__name__,
+        )
+        raise
 
 
-def restore_document_chunks(chunks):
-    if not chunks:
-        return
-    _get_collection().upsert(
-        ids=[chunk["id"] for chunk in chunks],
-        documents=[chunk["text"] for chunk in chunks],
-        metadatas=[chunk["metadata"] for chunk in chunks],
+def get_document_chunks(document_id):
+    """Capture a document's vector records so a failed delete can be rolled back."""
+    result = _get_collection().get(
+        where={"document_id": document_id},
+        include=["documents", "metadatas", "embeddings"],
     )
+    ids = result.get("ids") or []
+    documents = result.get("documents") or []
+    metadatas = result.get("metadatas") or []
+    embeddings = result.get("embeddings")
+    if embeddings is not None:
+        embeddings = list(embeddings)
+    else:
+        embeddings = []
+    return [
+        {
+            "id": record_id,
+            "document": documents[index],
+            "metadata": metadatas[index],
+            "embedding": embeddings[index] if index < len(embeddings) else None,
+        }
+        for index, record_id in enumerate(ids)
+    ]
+
+
+def restore_document_chunks(records):
+    """Restore captured records using upsert so rollback is idempotent."""
+    if not records:
+        return
+    kwargs = {
+        "ids": [record["id"] for record in records],
+        "documents": [record["document"] for record in records],
+        "metadatas": [record["metadata"] for record in records],
+    }
+    if all(record.get("embedding") is not None for record in records):
+        kwargs["embeddings"] = [record["embedding"] for record in records]
+    else:
+        kwargs["embeddings"] = _embed_texts(
+            kwargs["documents"], task_type="RETRIEVAL_DOCUMENT"
+        )
+    _get_collection().upsert(**kwargs)
+
+
+def indexed_document_ids(document_id=None):
+    """Check whether a document has indexed chunks."""
+    try:
+        kwargs = {"include": []}
+
+        if document_id is not None:
+            kwargs["where"] = {"document_id": document_id}
+
+        result = _get_collection().get(**kwargs)
+        return bool(result.get("ids"))
+
+    except Exception as exc:
+        logger.exception("Could not inspect ChromaDB index")
+        raise VectorStoreUnavailable(
+            "Vector index inspection is unavailable"
+        ) from exc
