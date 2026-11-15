@@ -31,8 +31,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: python -m pip install -r backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
+      - run: python -m pip install -r backend/requirements-test.txt
       - run: python -m compileall -q backend
-      - run: pytest -q
+      - run: python -m pytest -q
         working-directory: backend
