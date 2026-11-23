@@ -1,6 +1,4 @@
-/* =================================
-   STUDENT DASHBOARD
-================================= */
+/* STUDENT DASHBOARD*/
 
 .student-page {
   min-height: 100vh;
@@ -14,9 +12,7 @@
 }
 
 
-/* ---------------------------------
-   Welcome
---------------------------------- */
+/*Welcome */
 
 .student-welcome {
   margin-bottom: 30px;
@@ -46,9 +42,7 @@
 }
 
 
-/* ---------------------------------
-   Main Assistant
---------------------------------- */
+/*Main Assistant */
 
 .student-assistant {
   background: var(--primary);
