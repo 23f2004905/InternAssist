@@ -1,3 +1,4 @@
+
 import chromadb
 from uuid import uuid4
 
@@ -11,13 +12,19 @@ def add_chunks(chunks, document_id):
 
     documents = [chunk["text"] for chunk in chunks]
 
-    metadatas = [
-        {
-            "document_id": document_id,
-            "page_number": chunk["page_number"]
+    metadatas = []
+
+    for chunk in chunks:
+        metadata = {
+            "document_id": document_id
         }
-        for chunk in chunks
-    ]
+
+        # Store location information only when available
+        for key, value in chunk.items():
+            if key not in ["text", "document_id"] and value is not None:
+                metadata[key] = value
+
+        metadatas.append(metadata)
 
     collection.add(
         documents=documents,
@@ -40,10 +47,20 @@ def search(query, n_results=8):
     for i, document in enumerate(results["documents"][0]):
         metadata = results["metadatas"][0][i]
 
-        retrieved_chunks.append({
+        retrieved_chunk = {
             "text": document,
-            "document_id": metadata.get("document_id"),
-            "page_number": metadata.get("page_number")
-        })
+            "document_id": metadata.get("document_id")
+        }
+
+        # Return all available location metadata
+        for key, value in metadata.items():
+            if key != "document_id":
+                retrieved_chunk[key] = value
+
+        retrieved_chunks.append(retrieved_chunk)
 
     return retrieved_chunks
+def delete_document_chunks(document_id):
+    collection.delete(
+        where={"document_id": document_id}
+    )

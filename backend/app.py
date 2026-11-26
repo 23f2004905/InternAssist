@@ -4,9 +4,9 @@ from flask_session import Session
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-from services.document_extractor import extract_pdf_pages
+from services.document_extractor import extract_document
 from services.chunking import chunk_text
-from services.vectorstore import add_chunks, search
+from services.vectorstore import add_chunks, search, delete_document_chunks
 from services.llm import ask_gemini
 from uuid import uuid4
 
@@ -327,9 +327,11 @@ def get_documents():
     
 
 # Upload document
+
+    
 @app.route("/api/documents", methods=["POST"])
 def upload_document():
-
+    print("### CURRENT UPLOAD HANDLER EXECUTED ###", flush=True)
     user = get_logged_in_user()
 
     if not user:
@@ -360,40 +362,26 @@ def upload_document():
                      "Allowed types: PDF, DOCX, PPTX and TXT."
         }), 400
 
-    title = request.form.get(
-        "title",
-        ""
-    ).strip()
+    title = request.form.get("title", "").strip()
 
     if not title:
-        title = os.path.splitext(
-            file.filename
-        )[0]
+        title = os.path.splitext(file.filename)[0]
 
-    original_filename = secure_filename(
-        file.filename
-    )
+    original_filename = secure_filename(file.filename)
 
-    extension = get_file_extension(
-        original_filename
-    )
+    extension = get_file_extension(original_filename)
 
-    unique_name = (
-        str(uuid4())
-        + "."
-        + extension
-    )
+    unique_name = str(uuid4()) + "." + extension
 
     file_path = os.path.join(
         app.config["UPLOAD_FOLDER"],
         unique_name
     )
 
+    # Save the original uploaded document
     file.save(file_path)
 
-    file_size = os.path.getsize(
-        file_path
-    )
+    file_size = os.path.getsize(file_path)
 
     document = Document(
         title=title,
@@ -408,29 +396,48 @@ def upload_document():
     db.session.add(document)
     db.session.commit()
 
-    if extension == "pdf":
-        pages = extract_pdf_pages(file_path)
-        chunks = []
+    # Extract text from the complete document
+    extracted_sections = extract_document(
+        file_path,
+        extension
+    )
 
-    for page in pages:
-        if page["text"].strip():
-            page_chunks = chunk_text(page["text"])
+    chunks = []
 
-            for chunk in page_chunks:
-                chunks.append({
-                    "text": chunk,
-                    "page_number": page["page_number"]
-                })
+    # Split extracted text into smaller chunks
+    for section in extracted_sections:
 
-    
+        text = section["text"]
 
+        if not text.strip():
+            continue
+
+        section_chunks = chunk_text(text)
+
+        for chunk in section_chunks:
+
+            chunk_data = {
+                "text": chunk
+            }
+
+            # Preserve source location metadata
+            for key, value in section.items():
+
+                if key != "text" and value is not None:
+                    chunk_data[key] = value
+
+            chunks.append(chunk_data)
+
+    # Store chunks and metadata in ChromaDB
     if chunks:
         add_chunks(chunks, document.id)
+
     return jsonify({
-        "message": "Document uploaded successfully.",
-        "document": document.to_dict()
+        "message": "Document uploaded and processed successfully.",
+        "document": document.to_dict(),
+        "chunks_created": len(chunks)
     }), 201
-    
+
 
 # Download document
 @app.route(
@@ -498,6 +505,9 @@ def delete_document(document_id):
 
     if os.path.exists(file_path):
         os.remove(file_path)
+
+    # Remove the document's chunks from ChromaDB first
+    delete_document_chunks(document.id)
 
     db.session.delete(document)
 
@@ -854,6 +864,9 @@ def delete_conversation(conversation_id):
             "error": "Conversation not found."
         }), 404
 
+    # Delete the conversation's cached chat history
+    delete_chat_history(conversation.id)
+
     db.session.delete(conversation)
     db.session.commit()
 
@@ -950,14 +963,29 @@ def ask():
     )
 
     citations = []
+
     for chunk in retrieved_chunks:
         document = Document.query.get(chunk["document_id"])
 
-        citations.append({
+        citation = {
             "document_id": chunk["document_id"],
-            "document_name": document.filename if document else "Unknown document",
-            "page_number": chunk["page_number"]
-        })  
+            "document_name": document.filename if document else "Unknown document"
+        }
+
+        # Add the available source location
+        for key in [
+            "page_number",
+            "slide_number",
+            "paragraph_number",
+            "table_number",
+            "row_number",
+            "line_start",
+            "line_end"
+        ]:
+            if key in chunk:
+                citation[key] = chunk[key]
+
+        citations.append(citation)
 
     answer = ask_gemini(
         context=context,
