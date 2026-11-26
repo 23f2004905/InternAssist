@@ -37,4 +37,11 @@ dist/
 Thumbs.db
 
 backend/chroma_db/
-backend/flask_session/
+backend/flask_session/chroma_db/
+flask_session/
+test_files/
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
