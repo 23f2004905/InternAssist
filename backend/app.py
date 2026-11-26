@@ -34,16 +34,36 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 import os
+import re
 import hashlib
 import threading
 
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+
 from database import db
+from sqlalchemy import func, text
 from models import User, Document, DocumentFile, Conversation, Message, utcnow_naive
 
 from services.redis_service import (
     get_chat_history,
     save_chat_history,
     delete_chat_history
+)
+from services.rate_limiter import (
+    limiter,
+    init_rate_limiter,
+    get_user_key,
+    get_ip_key,
+    get_login_account_key,
+    get_login_account_limit,
+    get_login_ip_limit,
+    get_login_limit,
+    get_register_limit,
+    get_ask_user_limit,
+    get_ask_ip_limit,
+    get_document_limit,
+    check_daily_ai_quota,
+    reset_daily_ai_quota,
 )
 
 
@@ -232,7 +252,7 @@ def _start_index_recovery(force=False):
 def start_index_recovery_on_first_request():
     if app.config.get("TESTING"):
         return
-    if (request.endpoint not in (None, "static", "upload_document", "admin_index_status", "retry_index_recovery")
+    if (request.endpoint not in (None, "static", "upload_document", "admin_index_status", "retry_index_recovery", "health_live", "health_ready")
             and _index_recovery_state["status"] == "not_started"):
         _start_index_recovery()
 
@@ -375,6 +395,69 @@ CORS(
 )
 
 
+@app.before_request
+def verify_request_origin_and_csrf():
+    # Only verify mutating requests (POST, PUT, DELETE, PATCH)
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        origin = request.headers.get("Origin")
+
+        # 1. Strictly reject Origin: null (e.g. from sandboxed iframes or data URIs)
+        if origin and origin.strip().lower() == "null":
+            return jsonify({"error": "Null origin is strictly forbidden."}), 403
+
+        # 2. If Origin header is provided, verify against trusted origins
+        if origin:
+            host_url = request.host_url.rstrip("/")
+            allowed = set(cors_origins)
+            if origin != host_url and origin not in allowed:
+                return jsonify({"error": "Cross-origin request forbidden."}), 403
+
+        # 3. For cookie-authenticated sessions on mutating routes, enforce CSRF protection
+        is_auth_endpoint = request.path in ("/api/auth/login", "/api/auth/register")
+        user_id = session.get("user_id")
+        if user_id and not is_auth_endpoint:
+            req_csrf = (
+                request.headers.get("X-CSRF-Token")
+                or request.headers.get("X-CSRFToken")
+                or (request.get_json(silent=True) or {}).get("csrf_token")
+            )
+            sess_csrf = session.get("csrf_token")
+
+            # If a CSRF token is provided, it MUST match the session token
+            if req_csrf:
+                import secrets
+                if not sess_csrf or not secrets.compare_digest(str(req_csrf), str(sess_csrf)):
+                    return jsonify({"error": "Invalid CSRF token."}), 403
+            else:
+                # If CSRF token is missing:
+                # Origin verification supplements CSRF. If both Origin and CSRF are missing on an authenticated request, reject.
+                if not origin and (not app.config.get("TESTING") or app.config.get("CSRF_STRICT")):
+                    return jsonify({"error": "Missing Origin and CSRF token on authenticated request."}), 403
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if "Content-Security-Policy" not in response.headers:
+        response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+    if is_production() or request.is_secure:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    # Expose CSRF token in response cookie for frontend if in session
+    csrf_token = session.get("csrf_token")
+    if csrf_token and not request.cookies.get("csrf_token"):
+        response.set_cookie(
+            "csrf_token",
+            csrf_token,
+            samesite=app.config.get("SESSION_COOKIE_SAMESITE", "Lax"),
+            secure=app.config.get("SESSION_COOKIE_SECURE", False),
+            httponly=False,
+        )
+    return response
+
+
 # Flask configuration
 raw_secret_key = os.getenv("SECRET_KEY")
 if is_production():
@@ -457,6 +540,7 @@ Session(app)
 
 # Database + CORS
 db.init_app(app)
+init_rate_limiter(app, is_prod=is_production())
 
 
 def create_default_admin():
@@ -524,6 +608,54 @@ def home():
         "message": "InternAssist API is running"
     })
 
+
+# Health & Readiness Probes
+@app.route("/api/health/live", methods=["GET"])
+def health_live():
+    """Liveness probe: verifies process is responding."""
+    return jsonify({
+        "status": "live",
+        "timestamp": time.time()
+    }), 200
+
+
+@app.route("/api/health/ready", methods=["GET"])
+@app.route("/api/health", methods=["GET"])
+def health_ready():
+    """Readiness probe: validates database and vector index connectivity."""
+    checks = {}
+    healthy = True
+
+    # 1. Database connectivity
+    try:
+        db.session.execute(text("SELECT 1")).scalar()
+        checks["database"] = "ok"
+    except Exception as exc:
+        checks["database"] = f"error: {type(exc).__name__}"
+        healthy = False
+
+    # 2. Vectorstore / ChromaDB inspection
+    try:
+        indexed_document_ids()
+        checks["vectorstore"] = "ok"
+    except Exception as exc:
+        checks["vectorstore"] = f"error: {type(exc).__name__}"
+        healthy = False
+
+    # 3. Recovery worker state
+    with _index_recovery_lock:
+        rec_status = _index_recovery_state.get("status", "unknown")
+        checks["index_recovery"] = rec_status
+        if rec_status == "failed":
+            checks["index_recovery_error"] = _index_recovery_state.get("error")
+
+    status_code = 200 if healthy else 503
+    return jsonify({
+        "status": "ready" if healthy else "unhealthy",
+        "checks": checks,
+        "timestamp": time.time()
+    }), status_code
+
 def _json_body():
     data = request.get_json(silent=True)
     return data if isinstance(data, dict) else {}
@@ -536,9 +668,39 @@ def _str_field(data, key, default=""):
     return value if isinstance(value, str) else str(value)
 
 
+def regenerate_session() -> bool:
+    """Regenerate session ID using Flask-Session's regeneration mechanism to prevent session fixation.
+
+    Returns True on success. If regeneration fails, aborts authentication and returns False.
+    """
+    old_sid = getattr(session, "sid", None)
+    session.clear()
+    session["_init"] = True
+    if hasattr(app.session_interface, "regenerate"):
+        try:
+            app.session_interface.regenerate(session)
+            new_sid = getattr(session, "sid", None)
+            if old_sid and new_sid == old_sid:
+                app.logger.error("Session regeneration failed to produce a new session ID.")
+                session.clear()
+                session.modified = True
+                return False
+        except Exception as exc:
+            app.logger.error("Session regeneration exception: %s", exc)
+            session.clear()
+            session.modified = True
+            return False
+    session.pop("_init", None)
+    import secrets
+    session["csrf_token"] = secrets.token_hex(32)
+    session.modified = True
+    return True
+
+
 # Register
 
 @app.route("/api/auth/register", methods=["POST"])
+@limiter.limit(get_register_limit, key_func=get_ip_key)
 def register():
 
     data = _json_body()
@@ -553,10 +715,38 @@ def register():
             "error": "Name, email and password are required."
         }), 400
 
+    if len(name) > 100:
+        return jsonify({
+            "error": "Name cannot exceed 100 characters."
+        }), 400
+
+    if len(email) > 254 or not EMAIL_REGEX.match(email):
+        return jsonify({
+            "error": "A valid email address is required."
+        }), 400
+
+    if len(password) < 8:
+        return jsonify({
+            "error": "Password must be at least 8 characters long."
+        }), 400
+
+    if len(password) > 128:
+        return jsonify({
+            "error": "Password cannot exceed 128 characters."
+        }), 400
+
     if role not in ["student", "faculty"]:
         return jsonify({
             "error": "Invalid role."
         }), 400
+
+    if role == "faculty":
+        faculty_code = _str_field(data, "faculty_code").strip()
+        required_code = os.getenv("FACULTY_REGISTRATION_KEY")
+        if required_code and faculty_code != required_code:
+            return jsonify({
+                "error": "Faculty registration requires a valid faculty verification code."
+            }), 403
 
     existing_user = User.query.filter_by(
         email=email
@@ -594,6 +784,8 @@ def register():
 
 # Login
 @app.route("/api/auth/login", methods=["POST"])
+@limiter.limit(get_login_account_limit, key_func=get_login_account_key)
+@limiter.limit(get_login_ip_limit, key_func=get_ip_key)
 def login():
 
     data = _json_body()
@@ -605,6 +797,11 @@ def login():
         return jsonify({
             "error": "Email and password are required."
         }), 400
+
+    if len(email) > 254 or len(password) > 128:
+        return jsonify({
+            "error": "Invalid email or password."
+        }), 401
 
     user = User.query.filter_by(
         email=email
@@ -625,13 +822,19 @@ def login():
             "error": "Invalid email or password."
         }), 401
 
-
+    # Regenerate session to eliminate session fixation
+    if not regenerate_session():
+        app.logger.error("Aborting login: session regeneration failed.")
+        return jsonify({
+            "error": "Authentication failed due to secure session initialization error. Please retry."
+        }), 500
 
     session["user_id"] = user.id
 
     return jsonify({
         "message": "Login successful.",
-        "user": user.to_dict()
+        "user": user.to_dict(),
+        "csrf_token": session.get("csrf_token")
     }), 200
 
 
@@ -647,8 +850,13 @@ def current_user():
             "error": "Not authenticated."
         }), 401
 
+    if "csrf_token" not in session:
+        import secrets
+        session["csrf_token"] = secrets.token_hex(32)
+
     return jsonify({
-        "user": user.to_dict()
+        "user": user.to_dict(),
+        "csrf_token": session.get("csrf_token")
     }), 200
 
 
@@ -727,6 +935,7 @@ def get_documents():
 
 # Upload: persist the original bytes first; indexing runs in the recovery worker.
 @app.route("/api/documents", methods=["POST"])
+@limiter.limit(get_document_limit, key_func=get_user_key)
 def upload_document():
     user = get_logged_in_user()
     if not user:
@@ -1062,6 +1271,43 @@ def admin_stats():
     }), 200
 
 
+# Admin conversation oversight (privacy-preserving metadata only)
+@app.route("/api/admin/conversations", methods=["GET"])
+def admin_conversations():
+    user = get_logged_in_user()
+    if not user:
+        return jsonify({"error": "Authentication required."}), 401
+    if user.role != "admin":
+        return jsonify({"error": "Admin access required."}), 403
+
+    results = (
+        db.session.query(
+            Conversation,
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+            User.role.label("user_role"),
+            func.count(Message.id).label("message_count")
+        )
+        .outerjoin(User, Conversation.user_id == User.id)
+        .outerjoin(Message, Conversation.id == Message.conversation_id)
+        .group_by(Conversation.id, User.name, User.email, User.role)
+        .order_by(Conversation.updated_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    conversations = []
+    for conv, u_name, u_email, u_role, msg_count in results:
+        c_dict = conv.to_dict()
+        c_dict["user_name"] = u_name or "Unknown User"
+        c_dict["user_email"] = u_email or "unknown@campus.edu"
+        c_dict["user_role"] = u_role or "student"
+        c_dict["message_count"] = msg_count
+        conversations.append(c_dict)
+
+    return jsonify({"conversations": conversations}), 200
+
+
 
 
 # user's conversations
@@ -1394,6 +1640,8 @@ def _build_retrieval_query(question, history):
 
 
 @app.route("/api/ask", methods=["POST"])
+@limiter.limit(get_ask_user_limit, key_func=get_user_key)
+@limiter.limit(get_ask_ip_limit, key_func=get_ip_key)
 def ask():
     request_started = time.perf_counter()
 
@@ -1423,6 +1671,21 @@ def ask():
         return jsonify({
             "error": "Question is required."
         }), 400
+
+    if len(question) > 4000:
+        return jsonify({
+            "error": "Question exceeds maximum allowed length of 4000 characters."
+        }), 400
+
+    # Per-user daily AI quota check
+    allowed, current_count, daily_limit = check_daily_ai_quota(user.id)
+    if not allowed:
+        return jsonify({
+            "error": "Daily AI question quota exceeded.",
+            "message": f"You have reached your limit of {daily_limit} questions for today. Your quota resets at midnight.",
+            "daily_limit": daily_limit,
+            "current_usage": current_count
+        }), 429, {"Retry-After": "3600"}
 
     history = []
     conv_id_raw = data.get("conversation_id")
@@ -1525,10 +1788,14 @@ def ask():
             continue
 
         seen_citations.add(citation_key)
+        snippet_text = (chunk.get("text") or "").strip()
+        if len(snippet_text) > 350:
+            snippet_text = snippet_text[:350].rsplit(" ", 1)[0] + "..."
         citations.append({
             "document_id": doc_id,
             "document_name": doc_name,
-            "page_number": page_num
+            "page_number": page_num,
+            "snippet": snippet_text
         })
 
     context = "\n\n".join(context_blocks)

@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.resolve()}"
 os.environ["CHROMA_DB_PATH"] = str(TEST_DB_DIR / "chroma_test_db")
 
 from app import app, db
+from services.rate_limiter import limiter
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -39,8 +40,16 @@ def test_database():
 def client(test_database):
     with app.app_context():
         db.session.remove()
+        db.session.expire_all()
         db.drop_all()
         db.create_all()
+        try:
+            limiter.reset()
+        except Exception:
+            pass
 
     with app.test_client() as test_client:
         yield test_client
+        with app.app_context():
+            db.session.remove()
+            db.session.expire_all()

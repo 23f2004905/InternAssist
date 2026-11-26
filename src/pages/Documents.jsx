@@ -22,6 +22,9 @@ export default function Documents() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedType, setSelectedType] = useState("ALL");
+
   const isAdmin = currentUser?.role === "admin";
 
 
@@ -261,6 +264,17 @@ export default function Documents() {
     );
   }
 
+  const filteredDocuments = documents.filter((doc) => {
+    const query = searchQuery.trim().toLowerCase();
+    const matchesSearch =
+      !query ||
+      (doc.title || "").toLowerCase().includes(query) ||
+      (doc.filename || "").toLowerCase().includes(query);
+    const matchesType =
+      selectedType === "ALL" ||
+      (doc.file_type || "").toUpperCase() === selectedType;
+    return matchesSearch && matchesType;
+  });
 
   return (
     <div className="documents-page">
@@ -498,13 +512,41 @@ export default function Documents() {
               </h2>
 
               <p>
-                {documents.length}{" "}
+                {filteredDocuments.length} of {documents.length}{" "}
                 {documents.length === 1
                   ? "document"
                   : "documents"
                 }
               </p>
 
+            </div>
+
+            <div className="documents-filter-toolbar">
+              <div className="doc-search-wrapper">
+                <input
+                  type="search"
+                  className="doc-search-input"
+                  placeholder="Search by title or filename..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  aria-label="Search documents by title or filename"
+                />
+              </div>
+
+              <div className="doc-type-pills" role="radiogroup" aria-label="Filter documents by file type">
+                {["ALL", "PDF", "DOCX", "PPTX", "TXT"].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`doc-type-pill ${selectedType === type ? "active" : ""}`}
+                    onClick={() => setSelectedType(type)}
+                    role="radio"
+                    aria-checked={selectedType === type}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
             </div>
 
           </div>
@@ -545,6 +587,35 @@ export default function Documents() {
                   Upload Document
                 </button>
               )}
+
+            </div>
+
+          ) : filteredDocuments.length === 0 ? (
+
+            <div className="documents-empty">
+
+              <div className="empty-icon">
+                ⌕
+              </div>
+
+              <h3>
+                No matching documents
+              </h3>
+
+              <p>
+                No documents match your search &ldquo;{searchQuery}&rdquo;{selectedType !== "ALL" ? ` with type ${selectedType}` : ""}.
+              </p>
+
+              <button
+                type="button"
+                className="empty-upload-button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setSelectedType("ALL");
+                }}
+              >
+                Clear Filters
+              </button>
 
             </div>
 
@@ -595,7 +666,7 @@ export default function Documents() {
 
                 <tbody>
 
-                  {documents.map(
+                  {filteredDocuments.map(
                     (document) => (
 
                       <tr

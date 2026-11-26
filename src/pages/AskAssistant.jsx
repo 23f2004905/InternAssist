@@ -34,6 +34,7 @@ export default function AskAssistant() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [messages, setMessages] = useState([]);
   const [error, setError] = useState("");
+  const [activeCitation, setActiveCitation] = useState(null);
   const [conversationId, setConversationId] = useState(() => {
     const raw = searchParams.get("conversationId");
     const parsed = raw ? Number(raw) : NaN;
@@ -358,17 +359,24 @@ export default function AskAssistant() {
 
                   {Array.isArray(msg.citations) && msg.citations.length > 0 && (
                     <div className="thread-citations">
-                      <strong>Sources</strong>
-                      <ul>
+                      <strong className="thread-citations-title">Sources & References</strong>
+                      <div className="thread-citations-list">
                         {msg.citations.map((citation, index) => (
-                          <li key={`${citation.document_id}-${index}`}>
-                            {citation.document_name}
-                            {citation.page_number
-                              ? ` — Page ${citation.page_number}`
-                              : ""}
-                          </li>
+                          <button
+                            key={`${citation.document_id}-${index}`}
+                            type="button"
+                            className="citation-pill-btn"
+                            onClick={() => setActiveCitation(citation)}
+                            aria-label={`View citation for ${citation.document_name}${citation.page_number ? ` page ${citation.page_number}` : ""}`}
+                          >
+                            <span className="citation-pill-icon">📄</span>
+                            <span className="citation-pill-name">{citation.document_name}</span>
+                            {citation.page_number ? (
+                              <span className="citation-pill-page">p. {citation.page_number}</span>
+                            ) : null}
+                          </button>
                         ))}
-                      </ul>
+                      </div>
                     </div>
                   )}
                 </article>
@@ -464,6 +472,71 @@ export default function AskAssistant() {
         >
           ← Back to dashboard
         </button>
+
+        {activeCitation && (
+          <div
+            className="citation-modal-overlay"
+            onClick={() => setActiveCitation(null)}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="citation-modal-title"
+          >
+            <div
+              className="citation-modal-card"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="citation-modal-header">
+                <div className="citation-modal-title-group">
+                  <span className="citation-modal-icon">📄</span>
+                  <div>
+                    <h3 id="citation-modal-title" className="citation-modal-doc-title">
+                      {activeCitation.document_name}
+                    </h3>
+                    {activeCitation.page_number && (
+                      <span className="citation-modal-page-badge">
+                        Page {activeCitation.page_number}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="citation-modal-close-btn"
+                  onClick={() => setActiveCitation(null)}
+                  aria-label="Close excerpt preview"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="citation-modal-body">
+                <h4 className="citation-modal-section-label">Source Document Excerpt</h4>
+                <div className="citation-modal-snippet">
+                  {activeCitation.snippet ||
+                    "This institutional document was retrieved by InternAssist to ground the answer with verified university guidelines."}
+                </div>
+              </div>
+
+              <div className="citation-modal-footer">
+                <a
+                  href={`${API_URL}/api/documents/${activeCitation.document_id}/download`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="citation-modal-download-link"
+                >
+                  Open Original Document ↗
+                </a>
+                <button
+                  type="button"
+                  className="citation-modal-done-btn"
+                  onClick={() => setActiveCitation(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

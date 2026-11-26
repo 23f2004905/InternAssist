@@ -486,3 +486,46 @@ def test_vectorstore_search_none_resilience():
     ):
         results = search("dummy query")
         assert results == []
+
+
+def test_health_live_endpoint(client):
+    """GET /api/health/live should return 200 and live status."""
+    resp = client.get("/api/health/live")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "live"
+    assert "timestamp" in data
+
+
+def test_health_ready_endpoint_healthy(client):
+    """GET /api/health/ready and /api/health should return 200 and ready checks."""
+    with patch("app.indexed_document_ids", return_value=True):
+        for path in ("/api/health/ready", "/api/health"):
+            resp = client.get(path)
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["status"] == "ready"
+            assert data["checks"]["database"] == "ok"
+            assert data["checks"]["vectorstore"] == "ok"
+            assert "index_recovery" in data["checks"]
+
+
+def test_health_ready_endpoint_database_failure(client):
+    """GET /api/health/ready should return 503 when the database is unreachable."""
+    with patch("app.db.session.execute", side_effect=Exception("Database connection timeout")), \
+         patch("app.indexed_document_ids", return_value=True):
+        resp = client.get("/api/health/ready")
+        assert resp.status_code == 503
+        data = resp.get_json()
+        assert data["status"] == "unhealthy"
+        assert "error: Exception" in data["checks"]["database"]
+
+
+def test_health_ready_endpoint_vectorstore_failure(client):
+    """GET /api/health/ready should return 503 when the vector store fails inspection."""
+    with patch("app.indexed_document_ids", side_effect=Exception("ChromaDB unavailable")):
+        resp = client.get("/api/health/ready")
+        assert resp.status_code == 503
+        data = resp.get_json()
+        assert data["status"] == "unhealthy"
+        assert "error: Exception" in data["checks"]["vectorstore"]

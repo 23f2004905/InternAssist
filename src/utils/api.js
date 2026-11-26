@@ -9,6 +9,21 @@ export function getApiBaseUrl() {
   return "http://localhost:5001";
 }
 
+export function getCsrfToken() {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+export function getSecurityHeaders(customHeaders = {}) {
+  const headers = { ...customHeaders };
+  const token = getCsrfToken();
+  if (token && !headers["X-CSRF-Token"]) {
+    headers["X-CSRF-Token"] = token;
+  }
+  return headers;
+}
+
 export async function parseJsonResponse(response, fallbackError = "Request failed.") {
   let data = null;
   try {

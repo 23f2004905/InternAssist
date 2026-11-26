@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
-import { getApiBaseUrl } from "../utils/api";
+import { getApiBaseUrl, parseJsonResponse, getSecurityHeaders } from "../utils/api";
 import "./Users.css";
 
 const API_URL = getApiBaseUrl();
@@ -30,13 +30,10 @@ export default function Users() {
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Unable to load users."
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        "Unable to load users."
+      );
 
       setUsers(data.users || []);
 
@@ -84,18 +81,15 @@ export default function Users() {
         `${API_URL}/api/admin/users/${user.id}/${action}`,
         {
           method: "POST",
+          headers: getSecurityHeaders(),
           credentials: "include"
         }
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          `Unable to ${action} user.`
-        );
-      }
+      const data = await parseJsonResponse(
+        response,
+        `Unable to ${action} user.`
+      );
 
       setMessage(
         data.message

@@ -103,7 +103,7 @@
 
 .login-demo-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--ink-soft);
@@ -137,7 +137,7 @@
 .login-demo-role {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink-soft);
   text-transform: uppercase;
 }

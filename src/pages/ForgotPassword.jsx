@@ -1,47 +1,65 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
 import "./Login.css";
 
-// PROTOTYPE: no real email is sent. This just simulates the
-// "check your inbox" confirmation step. Phase 7 would wire this
-// to a real backend email/reset-token flow.
 export default function ForgotPassword() {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (email.trim()) setSent(true);
-  }
-
   return (
     <div className="login-page">
       <div className="login-card card">
         <div className="login-brand">
           <div className="login-mark">IA</div>
           <div>
-            <h1 className="login-title">Reset password</h1>
-            <p className="login-subtitle">We'll send a reset link</p>
+            <h1 className="login-title">Account Recovery</h1>
+            <p className="login-subtitle">Campus credential assistance</p>
           </div>
         </div>
 
-        {sent ? (
-          <p className="login-success">
-            If an account exists for {email}, a reset link has been sent.
-            <br /><br />
-            <span className="field-note">Prototype note: no real email is sent yet — this will be connected to a real email service later.</span>
+        <div style={{ marginTop: "16px", lineHeight: "1.6", color: "var(--ink)" }}>
+          <p style={{ fontSize: "14px", marginBottom: "16px" }}>
+            Password recovery for InternAssist campus accounts is managed through your institution&rsquo;s Central IT Support and Directory Services.
           </p>
-        ) : (
-          <form onSubmit={handleSubmit} className="login-form">
-            <label htmlFor="fp-email">Email</label>
-            <input id="fp-email" type="email" placeholder="you@student.edu"
-              value={email} onChange={(e) => setEmail(e.target.value)} />
 
-            <button type="submit" className="btn-primary login-submit">
-              Send reset link
-            </button>
-          </form>
-        )}
+          <div
+            style={{
+              background: "var(--surface-sunken)",
+              border: "1px solid var(--border)",
+              borderRadius: "8px",
+              padding: "16px",
+              marginBottom: "20px",
+              fontSize: "13px",
+            }}
+          >
+            <strong style={{ color: "var(--primary)", display: "block", marginBottom: "8px" }}>
+              How to restore your access:
+            </strong>
+            <ul style={{ paddingLeft: "20px", margin: 0, display: "flex", flexDirection: "column", gap: "6px" }}>
+              <li>
+                <strong>Students:</strong> Contact your university IT Help Desk or visit the campus single-sign-on self-service portal.
+              </li>
+              <li>
+                <strong>Faculty & Staff:</strong> Reach out to your departmental administrator or submit a ticket to the registrar&rsquo;s IT helpdesk.
+              </li>
+              <li>
+                <strong>System Administrators:</strong> Accounts can be reset or reactivated directly from the Admin Users management panel.
+              </li>
+            </ul>
+          </div>
+
+          <div
+            style={{
+              padding: "12px 14px",
+              background: "var(--primary-soft)",
+              borderRadius: "6px",
+              fontSize: "13px",
+              color: "var(--primary)",
+              marginBottom: "20px",
+            }}
+          >
+            <strong>Help Desk Email:</strong>{" "}
+            <a href="mailto:support@internassist.campus.edu" style={{ color: "var(--primary)", textDecoration: "underline" }}>
+              support@internassist.campus.edu
+            </a>
+          </div>
+        </div>
 
         <p className="login-footer-text">
           <Link to="/login" className="login-inline-link">Back to login</Link>

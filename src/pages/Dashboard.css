@@ -24,7 +24,7 @@
 
 .dashboard-eyebrow {
   color: var(--accent);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.12em;
   margin-bottom: 7px;
@@ -87,7 +87,7 @@
 .assistant-label {
   color: var(--accent);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   letter-spacing: 0.1em;
   margin-bottom: 3px;
 }
@@ -100,7 +100,7 @@
 
 .assistant-heading p {
   color: rgba(255, 255, 255, 0.66);
-  font-size: 11px;
+  font-size: 13px;
   margin-top: 3px;
 }
 
@@ -147,7 +147,7 @@
   align-items: center;
   gap: 10px;
 
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
 
   cursor: pointer;
@@ -176,7 +176,7 @@
 
 .suggestion-row > span {
   color: rgba(255, 255, 255, 0.48);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .suggestion-row button {
@@ -190,7 +190,7 @@
 
   border-radius: 5px;
 
-  font-size: 9px;
+  font-size: 12px;
 
   cursor: pointer;
 }
@@ -220,7 +220,7 @@
 
 .section-heading p {
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: 13px;
   margin-top: 3px;
 }
 
@@ -296,7 +296,7 @@
 
 .student-action-content p {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   margin-top: 5px;
 }
@@ -334,7 +334,7 @@
   color: var(--accent);
 
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 
   margin-bottom: 22px;
@@ -348,7 +348,7 @@
 
 .topic-card p {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
   margin-top: 5px;
 }
@@ -390,12 +390,12 @@
 
 .student-note strong {
   color: var(--primary);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .student-note p {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: 12px;
   margin-top: 2px;
 }
 
@@ -497,7 +497,7 @@
 
   padding: 6px 12px;
 
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -551,7 +551,7 @@
 
   font-family: var(--font-mono);
 
-  font-size: 9px;
+  font-size: 12px;
 
   letter-spacing: 0.1em;
 
@@ -569,7 +569,7 @@
 .faculty-assistant-heading p {
   color: rgba(255, 255, 255, 0.66);
 
-  font-size: 11px;
+  font-size: 13px;
 
   margin-top: 3px;
 }
@@ -626,7 +626,7 @@
   align-items: center;
   gap: 10px;
 
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
 
   cursor: pointer;
@@ -655,7 +655,7 @@
 .faculty-suggestion-row > span {
   color: rgba(255, 255, 255, 0.45);
 
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .faculty-suggestion-row button {
@@ -669,7 +669,7 @@
 
   padding: 5px 9px;
 
-  font-size: 9px;
+  font-size: 12px;
 
   cursor: pointer;
 }
@@ -773,7 +773,7 @@
 .faculty-action-content p {
   color: var(--ink-soft);
 
-  font-size: 10px;
+  font-size: 12px;
 
   line-height: 1.5;
 
@@ -820,7 +820,7 @@
 
   font-family: var(--font-mono);
 
-  font-size: 9px;
+  font-size: 12px;
 
   font-weight: 700;
 
@@ -838,7 +838,7 @@
 .faculty-topic-card p {
   color: var(--ink-soft);
 
-  font-size: 10px;
+  font-size: 12px;
 
   line-height: 1.55;
 
@@ -888,13 +888,13 @@
 .faculty-source-note strong {
   color: var(--primary);
 
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .faculty-source-note p {
   color: var(--ink-soft);
 
-  font-size: 10px;
+  font-size: 12px;
 
   margin-top: 2px;
 }
@@ -990,7 +990,7 @@
 .admin-eyebrow {
   color: var(--accent);
 
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 
   letter-spacing: 0.12em;
@@ -1078,7 +1078,7 @@
 
   font-family: var(--font-mono);
 
-  font-size: 9px;
+  font-size: 12px;
 
   font-weight: 600;
 
@@ -1105,7 +1105,7 @@
 
   font-family: var(--font-mono);
 
-  font-size: 8px;
+  font-size: 12px;
 
   font-weight: 600;
 }
@@ -1135,7 +1135,7 @@
 .admin-stat-card p {
   color: var(--ink-soft);
 
-  font-size: 10px;
+  font-size: 12px;
 
   line-height: 1.4;
 
@@ -1168,7 +1168,7 @@
 .admin-section-heading p {
   color: var(--ink-soft);
 
-  font-size: 11px;
+  font-size: 13px;
 
   line-height: 1.5;
 
@@ -1240,7 +1240,7 @@
 
   font-family: var(--font-mono);
 
-  font-size: 10px;
+  font-size: 12px;
 
   font-weight: 700;
 }
@@ -1265,7 +1265,7 @@
 .admin-management-content p {
   color: var(--ink-soft);
 
-  font-size: 10px;
+  font-size: 12px;
 
   line-height: 1.5;
 
@@ -1288,7 +1288,7 @@
 
   color: var(--primary);
 
-  font-size: 10px;
+  font-size: 12px;
 
   font-weight: 600;
 
@@ -1408,7 +1408,7 @@
 
 
   .admin-management-content p {
-    font-size: 9px;
+    font-size: 12px;
   }
 
 
@@ -1437,7 +1437,7 @@
 
   padding: 11px 14px;
 
-  font-size: 11px;
+  font-size: 13px;
 
   margin-bottom: 18px;
 }
